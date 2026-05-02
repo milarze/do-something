@@ -1,0 +1,32 @@
+default_profile = "local-llama"
+
+[profiles.local-llama]
+base_url = "http://127.0.0.1:8080/v1"
+model = "qwen2.5-coder-7b"
+# api_key_env = "LLAMA_API_KEY"   # optional; omit Authorization if unset
+temperature = 0.2
+max_tokens = 2048
+# system_prompt = "You are a concise coding assistant."
+# permission_mode controls who gates sensitive tool calls (write_file, run_shell):
+#   "client" (default) — the agent invokes fs/terminal calls directly and
+#                        trusts the client to prompt the user / enforce policy.
+#   "agent"            — the agent calls session/request_permission first and
+#                        only proceeds on an explicit allow.
+# permission_mode = "client"
+# supports_vision controls whether ContentBlock::Image inputs are forwarded
+# to the model as OpenAI multimodal `image_url` data URIs. Leave false for
+# text-only models; image blocks are then summarised as `[image: <mime>]`.
+# supports_vision = false
+
+[profiles.local-llama.extra_body]
+cache_prompt = true
+top_k = 40
+min_p = 0.05
+repeat_penalty = 1.05
+
+[profiles.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.2
+supports_vision = true
