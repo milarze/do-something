@@ -5,12 +5,12 @@
 //! Routes:
 //! - `GET  /health`              → `200 {"status":"ok"}`
 //! - `GET  /props`               → `200` with a llama.cpp-shaped props body
-//!                                  declaring `--jinja` and tool support.
+//!   declaring `--jinja` and tool support.
 //! - `GET  /v1/models`           → `200 {"object":"list","data":[...]}`
 //! - `POST /v1/chat/completions` → consumes the next scripted response from
-//!                                  the queue (FIFO). If the queue is empty
-//!                                  returns 500 — useful for asserting that
-//!                                  no LLM call was made.
+//!   the queue (FIFO). If the queue is empty
+//!   returns 500 — useful for asserting that
+//!   no LLM call was made.
 //!
 //! Scripted responses are sent as Server-Sent Events terminated by
 //! `data: [DONE]`. Only text deltas are supported in this round (no tool
@@ -98,7 +98,7 @@ async fn handle_conn(
     if reader.read_line(&mut line).await? == 0 {
         return Ok(());
     }
-    let parts: Vec<&str> = line.trim_end().split_whitespace().collect();
+    let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 2 {
         return Ok(());
     }
@@ -117,10 +117,10 @@ async fn handle_conn(
         if trimmed.is_empty() {
             break;
         }
-        if let Some((k, v)) = trimmed.split_once(':') {
-            if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().unwrap_or(0);
-            }
+        if let Some((k, v)) = trimmed.split_once(':')
+            && k.eq_ignore_ascii_case("content-length")
+        {
+            content_length = v.trim().parse().unwrap_or(0);
         }
     }
 

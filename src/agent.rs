@@ -291,7 +291,7 @@ pub async fn handle_prompt(
                     let tc_id = ToolCallId::new(id.clone());
                     announced.insert(id.clone(), tc_id.clone());
                     let kind = tool_kind_for(&name);
-                    let title = format!("{name}");
+                    let title = name.to_string();
                     let acp_tc = AcpToolCall::new(tc_id, title)
                         .kind(kind)
                         .status(ToolCallStatus::Pending);
@@ -661,14 +661,13 @@ fn handle_slash_command(
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let cmd = parts.next()?;
     match cmd {
-        "/help" => Some(format!(
-            "Available slash commands:\n\
+        "/help" => Some("Available slash commands:\n\
              - /help — show this help\n\
              - /profiles — list configured LLM profiles\n\
              \n\
              Tip: switch profile via the `session/set_mode` ACP method \
              (your client may expose this as a mode picker).\n"
-        )),
+            .to_string()),
         "/profiles" => {
             let (active, _) = state.config.active_profile();
             // Active profile per *session* may differ from config default if the

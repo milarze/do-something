@@ -172,10 +172,10 @@ impl Profile {
     pub fn api_key(&self) -> Option<String> {
         let var = self.api_key_env.as_deref()?;
         // Allow override via DO_SOMETHING_API_KEY too.
-        if let Ok(v) = std::env::var("DO_SOMETHING_API_KEY") {
-            if !v.is_empty() {
-                return Some(v);
-            }
+        if let Ok(v) = std::env::var("DO_SOMETHING_API_KEY")
+            && !v.is_empty()
+        {
+            return Some(v);
         }
         match std::env::var(var) {
             Ok(v) if !v.is_empty() => Some(v),

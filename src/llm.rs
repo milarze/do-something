@@ -356,19 +356,19 @@ impl LlmClient {
                                 // Check for an error envelope first — llama.cpp
                                 // and OpenAI-compatible servers can send
                                 // `data: {"error": {...}}` mid-stream.
-                                if let Ok(env) = serde_json::from_str::<ErrorEnvelope>(&ev.data) {
-                                    if let Some(err) = env.error {
-                                        let msg = err.message.unwrap_or_else(|| ev.data.clone());
-                                        if is_context_overflow_message(&msg) {
-                                            tracing::warn!(
-                                                "stream error indicates context overflow: {msg}"
-                                            );
-                                            yield StreamEvent::ContextOverflow(msg);
-                                        } else {
-                                            yield StreamEvent::Error(msg);
-                                        }
-                                        return;
+                                if let Ok(env) = serde_json::from_str::<ErrorEnvelope>(&ev.data)
+                                    && let Some(err) = env.error
+                                {
+                                    let msg = err.message.unwrap_or_else(|| ev.data.clone());
+                                    if is_context_overflow_message(&msg) {
+                                        tracing::warn!(
+                                            "stream error indicates context overflow: {msg}"
+                                        );
+                                        yield StreamEvent::ContextOverflow(msg);
+                                    } else {
+                                        yield StreamEvent::Error(msg);
                                     }
+                                    return;
                                 }
 
                                 let chunk = match serde_json::from_str::<ChatChunk>(&ev.data) {
@@ -379,10 +379,10 @@ impl LlmClient {
                                     }
                                 };
                                 for c in chunk.choices {
-                                    if let Some(t) = c.delta.content {
-                                        if !t.is_empty() {
-                                            yield StreamEvent::TextDelta(t);
-                                        }
+                                    if let Some(t) = c.delta.content
+                                        && !t.is_empty()
+                                    {
+                                        yield StreamEvent::TextDelta(t);
                                     }
                                     if let Some(tcs) = c.delta.tool_calls {
                                         for d in tcs {
@@ -399,11 +399,11 @@ impl LlmClient {
                                                     entry.args.push_str(&a);
                                                 }
                                             }
-                                            if !entry.announced {
-                                                if let (Some(id), Some(name)) = (entry.id.clone(), entry.name.clone()) {
-                                                    entry.announced = true;
-                                                    yield StreamEvent::ToolCallStart { id, name };
-                                                }
+                                            if !entry.announced
+                                                && let (Some(id), Some(name)) = (entry.id.clone(), entry.name.clone())
+                                            {
+                                                entry.announced = true;
+                                                yield StreamEvent::ToolCallStart { id, name };
                                             }
                                         }
                                     }
@@ -543,10 +543,10 @@ fn is_context_overflow(status: u16, body: &str) -> bool {
     if !matches!(status, 400 | 413 | 500 | 503) {
         return false;
     }
-    if let Ok(env) = serde_json::from_str::<ErrorEnvelope>(body) {
-        if let Some(msg) = env.error.and_then(|e| e.message) {
-            return is_context_overflow_message(&msg);
-        }
+    if let Ok(env) = serde_json::from_str::<ErrorEnvelope>(body)
+        && let Some(msg) = env.error.and_then(|e| e.message)
+    {
+        return is_context_overflow_message(&msg);
     }
     is_context_overflow_message(body)
 }
