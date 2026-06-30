@@ -70,8 +70,8 @@ pub struct Recipe {
     pub total_time_minutes: Option<u32>,
 
     /// Number of servings/yield.
-    #[serde(default)]
-    pub r#yield: Option<Servings>,
+    #[serde(default, rename = "yield")]
+    pub servings: Option<Servings>,
 
     /// Cuisine type (e.g., "Italian", "Japanese").
     #[serde(default)]
@@ -116,14 +116,12 @@ pub struct Recipe {
 
 impl Recipe {
     /// Compute a content hash for deduplication.
+    ///
+    /// Uses blake3 for stable, cryptographic hashing that can be safely
+    /// persisted across sessions and Rust versions.
     pub fn compute_hash(&self) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        self.source_url.hash(&mut hasher);
-        self.name.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
+        let hash_input = format!("{}|{}", self.source_url, self.name);
+        blake3::hash(hash_input.as_bytes()).to_hex().to_string()
     }
 }
 
@@ -258,7 +256,7 @@ mod tests {
             prep_time_minutes: Some(10),
             cook_time_minutes: Some(30),
             total_time_minutes: Some(40),
-            r#yield: Some(Servings::single(4)),
+            servings: Some(Servings::single(4)),
             cuisine: Some("American".to_string()),
             difficulty: Some(Difficulty::Easy),
             tags: vec!["quick".to_string()],
@@ -276,7 +274,7 @@ mod tests {
 
         assert_eq!(parsed.name, recipe.name);
         assert_eq!(parsed.ingredients.len(), 1);
-        assert_eq!(parsed.r#yield.unwrap().min, 4);
+        assert_eq!(parsed.servings.unwrap().min, 4);
     }
 
     #[test]

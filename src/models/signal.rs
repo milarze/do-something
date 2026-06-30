@@ -11,6 +11,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::ParseMethod;
+
 /// Unique identifier for a signal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -175,15 +177,7 @@ pub enum SignalType {
     },
 }
 
-/// Method used for parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParseMethod {
-    SchemaOrg,
-    Microdata,
-    Selectors,
-    Heuristic,
-}
+
 
 /// Type of recipe modification.
 #[derive(Debug, Clone, Serialize, Deserialize)]

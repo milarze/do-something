@@ -2,7 +2,6 @@ mod agent;
 mod config;
 mod llm;
 mod tools;
-mod models;
 
 use agent_client_protocol::schema::{
     CancelNotification, InitializeRequest, NewSessionRequest, PromptRequest, SetSessionModeRequest,

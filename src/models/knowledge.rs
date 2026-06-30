@@ -11,6 +11,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::ParseMethod;
+
 // ============================================================================
 // Site Configuration
 // ============================================================================
@@ -100,8 +102,8 @@ pub struct Selectors {
     #[serde(default)]
     pub total_time: Option<String>,
 
-    #[serde(default)]
-    pub r#yield: Option<String>,
+    #[serde(default, rename = "yield")]
+    pub servings: Option<String>,
 
     #[serde(default)]
     pub author: Option<String>,
@@ -142,16 +144,7 @@ impl SiteStats {
     }
 }
 
-/// Parsing method preference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParseMethod {
-    #[default]
-    SchemaOrg,
-    Microdata,
-    Selectors,
-    Heuristic,
-}
+
 
 // ============================================================================
 // User Model
