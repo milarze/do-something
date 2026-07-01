@@ -157,14 +157,6 @@ pub struct UserModel {
     #[serde(default = "default_user_id")]
     pub user_id: String,
 
-    /// Preferred cuisines (positive weight).
-    #[serde(default)]
-    pub preferred_cuisines: Vec<WeightedPreference>,
-
-    /// Avoided cuisines (negative weight).
-    #[serde(default)]
-    pub avoided_cuisines: Vec<WeightedPreference>,
-
     /// Maximum preferred prep time in minutes.
     #[serde(default)]
     pub max_prep_time_minutes: Option<u32>,
@@ -214,8 +206,6 @@ impl UserModel {
     pub fn default_user() -> Self {
         Self {
             user_id: default_user_id(),
-            preferred_cuisines: Vec::new(),
-            avoided_cuisines: Vec::new(),
             max_prep_time_minutes: None,
             max_cook_time_minutes: None,
             max_total_time_minutes: None,
@@ -228,21 +218,6 @@ impl UserModel {
             confidence: 0.0,
         }
     }
-}
-
-/// A weighted preference (cuisine, tag, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WeightedPreference {
-    /// The preference value (e.g., "Italian").
-    pub value: String,
-
-    /// Weight/strength of this preference (0.0 - 1.0).
-    #[serde(default = "default_weight")]
-    pub weight: f64,
-}
-
-fn default_weight() -> f64 {
-    0.5
 }
 
 // ============================================================================
@@ -359,13 +334,6 @@ mod tests {
     fn user_model_serialization() {
         let model = UserModel {
             user_id: "test-user".to_string(),
-            preferred_cuisines: vec![
-                WeightedPreference {
-                    value: "Japanese".to_string(),
-                    weight: 0.8,
-                },
-            ],
-            avoided_cuisines: vec![],
             max_prep_time_minutes: Some(30),
             max_cook_time_minutes: None,
             max_total_time_minutes: Some(60),
