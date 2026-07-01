@@ -2,7 +2,6 @@
 //!
 //! Signals are discrete events that capture:
 //! - Parse success/failure
-//! - User actions (kept, deleted, modified recipes)
 //! - Explicit feedback
 //! - Performance metrics
 
@@ -125,24 +124,6 @@ pub enum SignalType {
         attempted_methods: Vec<ParseMethod>,
     },
 
-    // Recipe lifecycle signals
-    RecipeSaved {
-        recipe_id: String,
-        has_image: bool,
-        ingredient_count: u32,
-    },
-    RecipeDeleted {
-        recipe_id: String,
-        reason: Option<String>,
-    },
-    RecipeModified {
-        recipe_id: String,
-        modification_type: RecipeModification,
-    },
-    RecipeFavorited {
-        recipe_id: String,
-    },
-
     // Explicit user feedback
     ExplicitFeedback {
         feedback: String,
@@ -178,17 +159,6 @@ pub enum SignalType {
 }
 
 
-
-/// Type of recipe modification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipeModification {
-    IngredientChange,
-    InstructionChange,
-    NoteAdded,
-    ServingAdjustment,
-    Other,
-}
 
 /// Sentiment of explicit feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
