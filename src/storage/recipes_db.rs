@@ -1,7 +1,7 @@
 //! File-based recipe storage using JSONL format.
 //!
-//! Provides simple append-only storage. For indexed/search-heavy workloads,
-//! use [`SqliteRecipesDb`] instead.
+//! Provides simple append-only storage. Search is O(n) - scans all
+//! recipes.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -16,7 +16,7 @@ use super::traits::RecipesStorage;
 /// File-based, append-only recipe storage.
 ///
 /// Uses a mutex to ensure thread-safe operations. Search operations scan all
-/// recipes, so for large datasets, use [`SqliteRecipesDb`] instead.
+/// recipes.
 #[derive(Debug)]
 pub struct FileRecipesDb {
     dir: PathBuf,
@@ -79,7 +79,9 @@ impl FileRecipesDb {
 impl RecipesStorage for FileRecipesDb {
     fn insert(&self, recipe: &Recipe) -> Result<RecipeId> {
         // Lock to prevent race condition between check and insert
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.lock().map_err(|e| {
+            std::io::Error::other(format!("lock poisoned: {}", e))
+        })?;
 
         // Check for duplicates by content hash
         if let Some(hash) = &recipe.content_hash

@@ -10,33 +10,12 @@ use std::path::PathBuf;
 use crate::models::agent_state::KnowledgeContext;
 use crate::models::knowledge::{Patterns, SiteConfig, UserModel};
 
-use super::error::{Result, StorageError};
+use super::error::Result;
+use super::file_utils::validate_path_component;
 use super::traits::KnowledgeStorage;
 
-/// Validates that a string is safe to use as a file path component.
-/// Prevents path traversal attacks by rejecting strings containing:
-/// - Path separators ('/', '\\')
-/// - Parent directory references ('..')
-/// - Null bytes
-fn validate_path_component(s: &str, context: &str) -> Result<()> {
-    if s.is_empty() {
-        return Err(StorageError::InvalidPath(format!(
-            "{} cannot be empty",
-            context
-        )));
-    }
-    if s.contains('/')
-        || s.contains('\\')
-        || s.contains("..")
-        || s.contains('\0')
-    {
-        return Err(StorageError::InvalidPath(format!(
-            "Invalid characters in {}: {}",
-            context, s
-        )));
-    }
-    Ok(())
-}
+/// Default token budget for knowledge context.
+const DEFAULT_TOKEN_BUDGET: u64 = 8000;
 
 /// File-based persistence for site configs, user models, and patterns.
 #[derive(Debug)]
@@ -200,7 +179,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
 
     fn load_for_context(&self, domain: Option<&str>) -> Result<KnowledgeContext> {
         let mut ctx = KnowledgeContext {
-            token_budget: 8000,
+            token_budget: DEFAULT_TOKEN_BUDGET,
             ..Default::default()
         };
 
@@ -236,6 +215,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
 mod tests {
     use super::*;
     use crate::models::ParseMethod;
+    use crate::StorageError;
     use tempfile::tempdir;
 
     #[test]

@@ -9,29 +9,9 @@ use std::path::PathBuf;
 
 use crate::models::agent_state::{SessionId, SessionState};
 
-use super::error::{Result, StorageError};
+use super::error::Result;
+use super::file_utils::validate_path_component;
 use super::traits::SessionStorage;
-
-/// Validates that a session ID is safe to use in a file path.
-/// Prevents path traversal attacks.
-fn validate_session_id(id: &SessionId) -> Result<()> {
-    if id.0.is_empty() {
-        return Err(StorageError::InvalidPath(
-            "session ID cannot be empty".to_string(),
-        ));
-    }
-    if id.0.contains('/')
-        || id.0.contains('\\')
-        || id.0.contains("..")
-        || id.0.contains('\0')
-    {
-        return Err(StorageError::InvalidPath(format!(
-            "Invalid characters in session ID: {}",
-            id.0
-        )));
-    }
-    Ok(())
-}
 
 /// File-based persistable session state for resumability.
 #[derive(Debug)]
@@ -50,7 +30,7 @@ impl FileSessionStore {
     ///
     /// Returns an error if the session ID contains path traversal characters.
     fn session_path(&self, id: &SessionId) -> Result<PathBuf> {
-        validate_session_id(id)?;
+        validate_path_component(&id.0, "session ID")?;
         Ok(self.dir.join(format!("{}.json", id)))
     }
 }
@@ -141,6 +121,7 @@ impl SessionStorage for FileSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StorageError;
     use tempfile::tempdir;
 
     #[test]

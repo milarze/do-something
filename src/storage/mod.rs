@@ -20,10 +20,9 @@
 //! ## Recipes
 //!
 //! Two backends are provided:
-//! - [`FileRecipesDb`] - Simple JSONL storage. Good for development and small datasets.
-//!   Search is O(n) - scans all recipes.
-//! - [`SqliteRecipesDb`] - SQLite with FTS5. Recommended for production. Provides
-//!   indexed full-text search and better performance at scale.
+//! - [`FileRecipesDb`] - Simple JSONL storage. Search is O(n) - scans all recipes.
+//! - [`SqliteRecipesDb`] - SQLite with FTS5. Provides indexed full-text search
+//!   and better performance at scale.
 //!
 //! ## Other Storage
 //!
@@ -51,6 +50,7 @@
 pub mod config_dir;
 pub mod error;
 pub mod file_storage;
+pub mod file_utils;
 pub mod knowledge_store;
 pub mod recipes_db;
 pub mod session_store;

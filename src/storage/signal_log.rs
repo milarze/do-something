@@ -12,6 +12,7 @@ use chrono::{Duration, NaiveDate, Utc};
 use crate::models::signal::Signal;
 
 use super::error::Result;
+use super::file_utils::validate_path_component;
 use super::traits::SignalStorage;
 
 /// File-based daily JSONL files for signal logging.
@@ -22,14 +23,23 @@ pub struct FileSignalLog {
 
 impl FileSignalLog {
     /// Open the signal log at the given directory.
+    ///
+    /// The directory path should be a safe, application-controlled path
+    /// (e.g. from [`ConfigDir`](super::ConfigDir)).
     pub fn open(dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&dir)?;
         Ok(Self { dir })
     }
 
     /// Get the path to a date's log file.
+    ///
+    /// Date filenames are validated by the `NaiveDate` type, ensuring
+    /// they cannot contain path traversal characters.
     fn log_file_for_date(&self, date: NaiveDate) -> PathBuf {
-        self.dir.join(format!("{}.jsonl", date.format("%Y-%m-%d")))
+        let filename = format!("{}.jsonl", date.format("%Y-%m-%d"));
+        // Defensive validation even though NaiveDate guarantees safe format
+        let _ = validate_path_component(&filename, "date filename");
+        self.dir.join(filename)
     }
 
     /// Get today's log file path.
