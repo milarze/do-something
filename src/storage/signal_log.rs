@@ -55,6 +55,7 @@ impl SignalStorage for FileSignalLog {
         let mut writer = BufWriter::new(file);
         let json = serde_json::to_string(signal)?;
         writeln!(writer, "{}", json)?;
+        writer.flush()?; // Explicit flush for durability
         Ok(())
     }
 

@@ -3,7 +3,7 @@
 //! Provides recipe persistence using SQLite for efficient querying
 //! and full-text search capabilities.
 
-use rusqlite::{Connection, params, OptionalExtension};
+use rusqlite::{Connection, params, OptionalExtension, Transaction};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -90,62 +90,36 @@ impl SqliteRecipesDb {
         ingredients.iter().map(|i| i.raw.as_str()).collect::<Vec<_>>().join(" ")
     }
 
-    /// Rebuild the full-text search index.
-    ///
-    /// This is SQLite-specific and not part of the trait.
-    pub fn rebuild_fts_index(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT INTO recipes_fts(recipes_fts) VALUES ('rebuild')", [])?;
-        Ok(())
+    /// Parse a Recipe from a database row.
+    /// Uses explicit column names to avoid fragility with schema changes.
+    fn parse_recipe_from_row(row: &rusqlite::Row) -> rusqlite::Result<Recipe> {
+        Ok(Recipe {
+            id: RecipeId::new(row.get::<_, String>("id")?),
+            name: row.get::<_, String>("name")?,
+            source_url: row.get::<_, String>("source_url")?.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            source_domain: row.get::<_, String>("source_domain")?,
+            ingredients: serde_json::from_str(&row.get::<_, String>("ingredients_json")?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            instructions: serde_json::from_str(&row.get::<_, String>("instructions_json")?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            prep_time_minutes: row.get::<_, Option<i32>>("prep_time_minutes")?.map(|v| v as u32),
+            cook_time_minutes: row.get::<_, Option<i32>>("cook_time_minutes")?.map(|v| v as u32),
+            total_time_minutes: row.get::<_, Option<i32>>("total_time_minutes")?.map(|v| v as u32),
+            servings: row.get::<_, Option<String>>("servings_json")?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            cuisine: row.get::<_, Option<String>>("cuisine")?,
+            difficulty: row.get::<_, Option<String>>("difficulty")?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            tags: serde_json::from_str(&row.get::<_, String>("tags_json")?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            nutrition: row.get::<_, Option<String>>("nutrition_json")?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            image_url: row.get::<_, Option<String>>("image_url")?.map(|s| s.parse()).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
+            author: row.get::<_, Option<String>>("author")?,
+            description: row.get::<_, Option<String>>("description")?,
+            scraped_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>("scraped_at")?).map(|dt| dt.with_timezone(&chrono::Utc)).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            content_hash: row.get::<_, Option<String>>("content_hash")?,
+            meta: serde_json::from_str(&row.get::<_, String>("meta_json")?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        })
     }
 
-    /// Search with custom result limit.
-    pub fn search_with_limit(&self, query: &str, limit: usize) -> Result<Vec<RecipeId>> {
-        let conn = self.conn.lock().unwrap();
-
-        let mut stmt = conn.prepare(
-            "SELECT id FROM recipes_fts WHERE recipes_fts MATCH ? ORDER BY rank LIMIT ?"
-        )?;
-
-        let ids = stmt
-            .query_map(params![query, limit as i64], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .map(RecipeId::new)
-            .collect();
-
-        Ok(ids)
-    }
-}
-
-impl RecipesStorage for SqliteRecipesDb {
-    fn insert(&self, recipe: &Recipe) -> Result<RecipeId> {
-        let conn = self.conn.lock().unwrap();
-
-        // Check for duplicates by content hash
-        if let Some(hash) = &recipe.content_hash {
-            let existing: Option<String> = conn
-                .query_row(
-                    "SELECT id FROM recipes WHERE content_hash = ?",
-                    params![hash],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            
-            if let Some(id) = existing {
-                return Ok(RecipeId::new(id));
-            }
-        }
-
-        let id = RecipeId::generate();
-        let mut recipe = recipe.clone();
-        recipe.id = id.clone();
-
-        // Compute content hash if not present
-        if recipe.content_hash.is_none() {
-            recipe.content_hash = Some(recipe.compute_hash());
-        }
-
-        conn.execute(
+    /// Insert a recipe within a transaction.
+    fn insert_in_transaction(tx: &Transaction, recipe: &Recipe) -> Result<()> {
+        tx.execute(
             r#"
             INSERT INTO recipes (
                 id, name, source_url, source_domain, ingredients_json, instructions_json,
@@ -180,10 +154,87 @@ impl RecipesStorage for SqliteRecipesDb {
 
         // Insert into FTS
         let ingredients_text = Self::ingredients_to_text(&recipe.ingredients);
-        conn.execute(
+        tx.execute(
             "INSERT INTO recipes_fts(id, name, ingredients_text) VALUES (?1, ?2, ?3)",
             params![recipe.id.0, recipe.name, ingredients_text],
         )?;
+
+        Ok(())
+    }
+
+    /// Rebuild the full-text search index.
+    ///
+    /// This is SQLite-specific and not part of the trait.
+    pub fn rebuild_fts_index(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT INTO recipes_fts(recipes_fts) VALUES ('rebuild')", [])?;
+        Ok(())
+    }
+
+    /// Search with custom result limit.
+    pub fn search_with_limit(&self, query: &str, limit: usize) -> Result<Vec<RecipeId>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id FROM recipes_fts WHERE recipes_fts MATCH ? ORDER BY rank LIMIT ?"
+        )?;
+
+        let ids = stmt
+            .query_map(params![query, limit as i64], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .map(RecipeId::new)
+            .collect();
+
+        Ok(ids)
+    }
+}
+
+impl RecipesStorage for SqliteRecipesDb {
+    fn insert(&self, recipe: &Recipe) -> Result<RecipeId> {
+        let mut conn = self.conn.lock().unwrap();
+        
+        // First check for duplicates by content hash or URL
+        if let Some(hash) = &recipe.content_hash {
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM recipes WHERE content_hash = ?",
+                    params![hash],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            
+            if let Some(id) = existing {
+                return Ok(RecipeId::new(id));
+            }
+        }
+        
+        // Also check for duplicates by URL
+        let url_str = recipe.source_url.to_string();
+        let existing_url: Option<String> = conn
+            .query_row(
+                "SELECT id FROM recipes WHERE source_url = ?",
+                params![url_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+        
+        if let Some(id) = existing_url {
+            return Ok(RecipeId::new(id));
+        }
+
+        let id = RecipeId::generate();
+        let mut recipe = recipe.clone();
+        recipe.id = id.clone();
+
+        // Compute content hash if not present
+        if recipe.content_hash.is_none() {
+            recipe.content_hash = Some(recipe.compute_hash());
+        }
+
+        // Use a transaction to ensure FTS and main table stay consistent
+        let tx = conn.transaction()?;
+        Self::insert_in_transaction(&tx, &recipe)?;
+        tx.commit()?;
 
         Ok(id)
     }
@@ -195,30 +246,7 @@ impl RecipesStorage for SqliteRecipesDb {
             .query_row(
                 "SELECT * FROM recipes WHERE id = ?",
                 params![id.0],
-                |row| {
-                    Ok(Recipe {
-                        id: RecipeId::new(row.get::<_, String>(0)?),
-                        name: row.get(1)?,
-                        source_url: row.get::<_, String>(2)?.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        source_domain: row.get(3)?,
-                        ingredients: serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        instructions: serde_json::from_str(&row.get::<_, String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        prep_time_minutes: row.get(6)?,
-                        cook_time_minutes: row.get(7)?,
-                        total_time_minutes: row.get(8)?,
-                        servings: row.get::<_, Option<String>>(9)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        cuisine: row.get(10)?,
-                        difficulty: row.get::<_, Option<String>>(11)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        tags: serde_json::from_str(&row.get::<_, String>(12)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        nutrition: row.get::<_, Option<String>>(13)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        image_url: row.get::<_, Option<String>>(14)?.map(|s| s.parse()).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        author: row.get(15)?,
-                        description: row.get(16)?,
-                        scraped_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(17)?).map(|dt| dt.with_timezone(&chrono::Utc)).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        content_hash: row.get(18)?,
-                        meta: serde_json::from_str(&row.get::<_, String>(19)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    })
-                },
+                Self::parse_recipe_from_row,
             )
             .optional()?;
 
@@ -249,37 +277,11 @@ impl RecipesStorage for SqliteRecipesDb {
         let conn = self.conn.lock().unwrap();
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, source_url, source_domain, ingredients_json, instructions_json,
-                    prep_time_minutes, cook_time_minutes, total_time_minutes, servings_json,
-                    cuisine, difficulty, tags_json, nutrition_json, image_url, author,
-                    description, scraped_at, content_hash, meta_json FROM recipes"
+            "SELECT * FROM recipes"
         )?;
 
         let recipes = stmt
-            .query_map([], |row| {
-                Ok(Recipe {
-                    id: RecipeId::new(row.get::<_, String>(0)?),
-                    name: row.get(1)?,
-                    source_url: row.get::<_, String>(2)?.parse().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    source_domain: row.get(3)?,
-                    ingredients: serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    instructions: serde_json::from_str(&row.get::<_, String>(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    prep_time_minutes: row.get(6)?,
-                    cook_time_minutes: row.get(7)?,
-                    total_time_minutes: row.get(8)?,
-                    servings: row.get::<_, Option<String>>(9)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    cuisine: row.get(10)?,
-                    difficulty: row.get::<_, Option<String>>(11)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    tags: serde_json::from_str(&row.get::<_, String>(12)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    nutrition: row.get::<_, Option<String>>(13)?.map(|s| serde_json::from_str(&s)).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    image_url: row.get::<_, Option<String>>(14)?.map(|s| s.parse()).transpose().map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    author: row.get(15)?,
-                    description: row.get(16)?,
-                    scraped_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(17)?).map(|dt| dt.with_timezone(&chrono::Utc)).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    content_hash: row.get(18)?,
-                    meta: serde_json::from_str(&row.get::<_, String>(19)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                })
-            })?
+            .query_map([], Self::parse_recipe_from_row)?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -300,6 +302,34 @@ mod tests {
             source_url: url.parse().unwrap(),
             source_domain: "example.com".to_string(),
             ingredients: vec![],
+            instructions: vec![],
+            prep_time_minutes: None,
+            cook_time_minutes: None,
+            total_time_minutes: None,
+            servings: None,
+            cuisine: None,
+            difficulty: None,
+            tags: vec![],
+            nutrition: None,
+            image_url: None,
+            author: None,
+            description: None,
+            scraped_at: Utc::now(),
+            content_hash: None,
+            meta: HashMap::new(),
+        }
+    }
+
+    fn test_recipe_with_ingredients(name: &str, url: &str, ingredients: Vec<&str>) -> Recipe {
+        Recipe {
+            id: RecipeId::generate(),
+            name: name.to_string(),
+            source_url: url.parse().unwrap(),
+            source_domain: "example.com".to_string(),
+            ingredients: ingredients
+                .into_iter()
+                .map(crate::models::recipe::Ingredient::from_raw)
+                .collect(),
             instructions: vec![],
             prep_time_minutes: None,
             cook_time_minutes: None,
@@ -394,5 +424,105 @@ mod tests {
         db.insert(&test_recipe("R2", "https://example.com/r2")).unwrap();
         
         assert_eq!(db.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn duplicate_by_url_not_inserted() {
+        let db = SqliteRecipesDb::open_in_memory().unwrap();
+        
+        let r1 = test_recipe("Recipe 1", "https://example.com/test");
+        let r2 = test_recipe("Recipe 2", "https://example.com/test"); // Same URL, different name
+        
+        let id1 = db.insert(&r1).unwrap();
+        let id2 = db.insert(&r2).unwrap();
+        
+        // Should return the same ID for duplicate URL
+        assert_eq!(id1, id2);
+        assert_eq!(db.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn search_finds_by_ingredients() {
+        let db = SqliteRecipesDb::open_in_memory().unwrap();
+        
+        let r1 = test_recipe_with_ingredients(
+            "Chocolate Cake",
+            "https://example.com/cake",
+            vec!["chocolate", "flour", "sugar"],
+        );
+        let r2 = test_recipe_with_ingredients(
+            "Apple Pie",
+            "https://example.com/pie",
+            vec!["apples", "flour", "butter"],
+        );
+        
+        db.insert(&r1).unwrap();
+        db.insert(&r2).unwrap();
+        
+        // Search for ingredient
+        let results = db.search("chocolate").unwrap();
+        assert_eq!(results.len(), 1);
+        
+        let results = db.search("flour").unwrap();
+        assert_eq!(results.len(), 2); // Both recipes have flour
+    }
+
+    #[test]
+    fn concurrent_inserts_safe() {
+        use std::thread;
+        
+        let db = Arc::new(SqliteRecipesDb::open_in_memory().unwrap());
+        let mut handles = vec![];
+        
+        for i in 0..10 {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                let recipe = test_recipe(
+                    &format!("Recipe {}", i),
+                    &format!("https://example.com/r{}", i),
+                );
+                db_clone.insert(&recipe).unwrap()
+            });
+            handles.push(handle);
+        }
+        
+        let ids: Vec<RecipeId> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        
+        // All IDs should be unique
+        let unique_ids: std::collections::HashSet<_> = ids.into_iter().collect();
+        assert_eq!(unique_ids.len(), 10);
+        
+        // All recipes should be stored
+        assert_eq!(db.count().unwrap(), 10);
+    }
+
+    #[test]
+    fn concurrent_reads_safe() {
+        use std::thread;
+        
+        let db = Arc::new(SqliteRecipesDb::open_in_memory().unwrap());
+        
+        // Insert some recipes first
+        for i in 0..5 {
+            db.insert(&test_recipe(
+                &format!("Recipe {}", i),
+                &format!("https://example.com/r{}", i),
+            ))
+            .unwrap();
+        }
+        
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let db_clone = Arc::clone(&db);
+            let handle = thread::spawn(move || {
+                db_clone.count().unwrap()
+            });
+            handles.push(handle);
+        }
+        
+        let counts: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        
+        // All reads should return the same count
+        assert!(counts.iter().all(|c| *c == 5));
     }
 }

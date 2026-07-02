@@ -10,8 +10,33 @@ use std::path::PathBuf;
 use crate::models::agent_state::KnowledgeContext;
 use crate::models::knowledge::{Patterns, SiteConfig, UserModel};
 
-use super::error::Result;
+use super::error::{Result, StorageError};
 use super::traits::KnowledgeStorage;
+
+/// Validates that a string is safe to use as a file path component.
+/// Prevents path traversal attacks by rejecting strings containing:
+/// - Path separators ('/', '\\')
+/// - Parent directory references ('..')
+/// - Null bytes
+fn validate_path_component(s: &str, context: &str) -> Result<()> {
+    if s.is_empty() {
+        return Err(StorageError::InvalidPath(format!(
+            "{} cannot be empty",
+            context
+        )));
+    }
+    if s.contains('/')
+        || s.contains('\\')
+        || s.contains("..")
+        || s.contains('\0')
+    {
+        return Err(StorageError::InvalidPath(format!(
+            "Invalid characters in {}: {}",
+            context, s
+        )));
+    }
+    Ok(())
+}
 
 /// File-based persistence for site configs, user models, and patterns.
 #[derive(Debug)]
@@ -30,13 +55,19 @@ impl FileKnowledgeStore {
     }
 
     /// Get the path for a site config file.
-    fn site_config_path(&self, domain: &str) -> PathBuf {
-        self.dir.join("site_configs").join(format!("{}.json", domain))
+    ///
+    /// Returns an error if the domain contains path traversal characters.
+    fn site_config_path(&self, domain: &str) -> Result<PathBuf> {
+        validate_path_component(domain, "domain")?;
+        Ok(self.dir.join("site_configs").join(format!("{}.json", domain)))
     }
 
     /// Get the path for a user model file.
-    fn user_model_path(&self, user_id: &str) -> PathBuf {
-        self.dir.join("user_models").join(format!("{}.json", user_id))
+    ///
+    /// Returns an error if the user ID contains path traversal characters.
+    fn user_model_path(&self, user_id: &str) -> Result<PathBuf> {
+        validate_path_component(user_id, "user_id")?;
+        Ok(self.dir.join("user_models").join(format!("{}.json", user_id)))
     }
 
     /// Get the path for the patterns file.
@@ -74,10 +105,10 @@ impl FileKnowledgeStore {
 
 impl KnowledgeStorage for FileKnowledgeStore {
     fn get_site_config(&self, domain: &str) -> Result<Option<SiteConfig>> {
-        let path = self.site_config_path(domain);
+        let path = self.site_config_path(domain)?;
         if !path.exists() {
             // Try default config
-            let default_path = self.site_config_path("_default");
+            let default_path = self.site_config_path("_default")?;
             if default_path.exists() {
                 return self.load_json(&default_path);
             }
@@ -87,7 +118,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
     }
 
     fn save_site_config(&self, config: &SiteConfig) -> Result<()> {
-        let path = self.site_config_path(&config.domain);
+        let path = self.site_config_path(&config.domain)?;
         self.save_json(&path, config)
     }
 
@@ -114,7 +145,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
     }
 
     fn delete_site_config(&self, domain: &str) -> Result<()> {
-        let path = self.site_config_path(domain);
+        let path = self.site_config_path(domain)?;
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -122,7 +153,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
     }
 
     fn get_user_model(&self, user_id: &str) -> Result<Option<UserModel>> {
-        let path = self.user_model_path(user_id);
+        let path = self.user_model_path(user_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -130,7 +161,7 @@ impl KnowledgeStorage for FileKnowledgeStore {
     }
 
     fn save_user_model(&self, model: &UserModel) -> Result<()> {
-        let path = self.user_model_path(&model.user_id);
+        let path = self.user_model_path(&model.user_id)?;
         self.save_json(&path, model)
     }
 
@@ -301,5 +332,56 @@ mod tests {
 
         store.delete_site_config("example.com").unwrap();
         assert!(store.get_site_config("example.com").unwrap().is_none());
+    }
+
+    // Path traversal security tests
+    #[test]
+    fn rejects_path_traversal_in_domain() {
+        let dir = tempdir().unwrap();
+        let store = FileKnowledgeStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.get_site_config("../etc/passwd");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_path_traversal_in_user_id() {
+        let dir = tempdir().unwrap();
+        let store = FileKnowledgeStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.get_user_model("../../etc/shadow");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_empty_domain() {
+        let dir = tempdir().unwrap();
+        let store = FileKnowledgeStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.get_site_config("");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_slash_in_domain() {
+        let dir = tempdir().unwrap();
+        let store = FileKnowledgeStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.get_site_config("example.com/subdir");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_null_byte_in_domain() {
+        let dir = tempdir().unwrap();
+        let store = FileKnowledgeStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.get_site_config("example\0.com");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
     }
 }

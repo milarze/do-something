@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Storage-related errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StorageError {
     /// IO error during file operations.
     #[error("IO error: {0}")]

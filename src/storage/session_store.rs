@@ -4,13 +4,34 @@
 //! sessions can be resumed after interruption.
 
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 
 use crate::models::agent_state::{SessionId, SessionState};
 
-use super::error::Result;
+use super::error::{Result, StorageError};
 use super::traits::SessionStorage;
+
+/// Validates that a session ID is safe to use in a file path.
+/// Prevents path traversal attacks.
+fn validate_session_id(id: &SessionId) -> Result<()> {
+    if id.0.is_empty() {
+        return Err(StorageError::InvalidPath(
+            "session ID cannot be empty".to_string(),
+        ));
+    }
+    if id.0.contains('/')
+        || id.0.contains('\\')
+        || id.0.contains("..")
+        || id.0.contains('\0')
+    {
+        return Err(StorageError::InvalidPath(format!(
+            "Invalid characters in session ID: {}",
+            id.0
+        )));
+    }
+    Ok(())
+}
 
 /// File-based persistable session state for resumability.
 #[derive(Debug)]
@@ -26,22 +47,26 @@ impl FileSessionStore {
     }
 
     /// Get the path for a session file.
-    fn session_path(&self, id: &SessionId) -> PathBuf {
-        self.dir.join(format!("{}.json", id))
+    ///
+    /// Returns an error if the session ID contains path traversal characters.
+    fn session_path(&self, id: &SessionId) -> Result<PathBuf> {
+        validate_session_id(id)?;
+        Ok(self.dir.join(format!("{}.json", id)))
     }
 }
 
 impl SessionStorage for FileSessionStore {
     fn save(&self, session: &SessionState) -> Result<()> {
-        let path = self.session_path(&session.id);
+        let path = self.session_path(&session.id)?;
         let file = File::create(&path)?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, session)?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, session)?;
+        writer.flush()?;
         Ok(())
     }
 
     fn load(&self, id: &SessionId) -> Result<Option<SessionState>> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -68,8 +93,8 @@ impl SessionStorage for FileSessionStore {
 
         // Sort by modification time, newest first
         ids.sort_by(|a, b| {
-            let path_a = self.session_path(a);
-            let path_b = self.session_path(b);
+            let path_a = self.dir.join(format!("{}.json", a));
+            let path_b = self.dir.join(format!("{}.json", b));
             let time_a = path_a.metadata().and_then(|m| m.modified()).ok();
             let time_b = path_b.metadata().and_then(|m| m.modified()).ok();
             time_b.cmp(&time_a)
@@ -79,7 +104,7 @@ impl SessionStorage for FileSessionStore {
     }
 
     fn delete(&self, id: &SessionId) -> Result<()> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -87,7 +112,8 @@ impl SessionStorage for FileSessionStore {
     }
 
     fn exists(&self, id: &SessionId) -> Result<bool> {
-        Ok(self.session_path(id).exists())
+        let path = self.session_path(id)?;
+        Ok(path.exists())
     }
 
     fn latest(&self) -> Result<Option<SessionState>> {
@@ -206,5 +232,46 @@ mod tests {
         let count = store.clear().unwrap();
         assert_eq!(count, 3);
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    // Path traversal security tests
+    #[test]
+    fn rejects_path_traversal_in_session_id() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.load(&SessionId::new("../etc/passwd"));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_slash_in_session_id() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.exists(&SessionId::new("foo/bar"));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_empty_session_id() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.load(&SessionId::new(""));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
+    }
+
+    #[test]
+    fn rejects_null_byte_in_session_id() {
+        let dir = tempdir().unwrap();
+        let store = FileSessionStore::open(dir.path().to_path_buf()).unwrap();
+
+        let result = store.delete(&SessionId::new("sess\0ion"));
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::InvalidPath(_)));
     }
 }
