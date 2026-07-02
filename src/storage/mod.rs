@@ -1,7 +1,7 @@
 //! Storage layer for the recipe scraping agent.
 //!
 //! This module provides persistence for:
-//! - Recipe storage with search index
+//! - Recipe storage with search
 //! - Signal logging (daily JSONL files)
 //! - Knowledge store (site configs, user models, patterns)
 //! - Session state for resumability
@@ -17,11 +17,16 @@
 //!
 //! # Backends
 //!
-//! For recipes, two backends are provided:
-//! - [`FileRecipesDb`] - Uses JSONL files (default)
-//! - [`SqliteRecipesDb`] - Uses SQLite database
+//! ## Recipes
 //!
-//! For other storage, file-based implementations are used:
+//! Two backends are provided:
+//! - [`FileRecipesDb`] - Simple JSONL storage. Good for development and small datasets.
+//!   Search is O(n) - scans all recipes.
+//! - [`SqliteRecipesDb`] - SQLite with FTS5. Recommended for production. Provides
+//!   indexed full-text search and better performance at scale.
+//!
+//! ## Other Storage
+//!
 //! - [`FileSignalLog`] - Daily JSONL files
 //! - [`FileKnowledgeStore`] - JSON files
 //! - [`FileSessionStore`] - JSON files
@@ -36,8 +41,7 @@
 //! │   ├── user_models/
 //! │   └── patterns/
 //! ├── recipes/
-//! │   ├── recipes.jsonl
-//! │   └── index.json
+//! │   └── recipes.jsonl
 //! ├── signals/
 //! │   └── YYYY-MM-DD.jsonl
 //! └── state/
@@ -112,8 +116,45 @@ mod tests {
     #[test]
     fn sqlite_recipes_works() {
         let sqlite_db = SqliteRecipesDb::open_in_memory().unwrap();
-        
+
         use traits::RecipesStorage;
         assert_eq!(sqlite_db.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn sqlite_fts_rebuild_works() {
+        let sqlite_db = SqliteRecipesDb::open_in_memory().unwrap();
+
+        use traits::RecipesStorage;
+        let recipe = crate::models::recipe::Recipe {
+            id: crate::models::recipe::RecipeId::generate(),
+            name: "Test".to_string(),
+            source_url: "https://example.com/test".parse().unwrap(),
+            source_domain: "example.com".to_string(),
+            ingredients: vec![],
+            instructions: vec![],
+            prep_time_minutes: None,
+            cook_time_minutes: None,
+            total_time_minutes: None,
+            servings: None,
+            cuisine: None,
+            difficulty: None,
+            tags: vec![],
+            nutrition: None,
+            image_url: None,
+            author: None,
+            description: None,
+            scraped_at: chrono::Utc::now(),
+            content_hash: None,
+            meta: std::collections::HashMap::new(),
+        };
+        sqlite_db.insert(&recipe).unwrap();
+
+        // Rebuild FTS index
+        sqlite_db.rebuild_fts_index().unwrap();
+
+        // Search still works after rebuild
+        let results = sqlite_db.search("Test").unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

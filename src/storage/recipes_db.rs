@@ -1,45 +1,31 @@
-//! File-based recipe storage with append-only JSONL and search index.
+//! File-based recipe storage using JSONL format.
 //!
-//! Provides CRUD operations for recipes with duplicate detection
-//! and full-text search capabilities.
+//! Provides simple append-only storage. For indexed/search-heavy workloads,
+//! use [`SqliteRecipesDb`] instead.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-
-use serde::{Deserialize, Serialize};
 
 use crate::models::recipe::{Recipe, RecipeId};
 
 use super::error::Result;
 use super::traits::RecipesStorage;
 
-/// In-memory index for fast lookups.
-#[derive(Debug, Default)]
-struct SearchIndex {
-    by_url: std::collections::HashMap<String, RecipeId>,
-    by_content_hash: std::collections::HashMap<String, RecipeId>,
-    by_name: Vec<(String, RecipeId)>,
-}
-
-/// File-based, append-only recipe storage with search index.
+/// File-based, append-only recipe storage.
+///
+/// Note: Search operations scan all recipes. For better performance
+/// with large datasets, use [`SqliteRecipesDb`].
 #[derive(Debug)]
 pub struct FileRecipesDb {
     dir: PathBuf,
-    index: Arc<RwLock<SearchIndex>>,
 }
 
 impl FileRecipesDb {
     /// Open the recipes database at the given directory.
     pub fn open(dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&dir)?;
-        let db = Self {
-            dir,
-            index: Arc::new(RwLock::new(SearchIndex::default())),
-        };
-        db.rebuild_index()?;
-        Ok(db)
+        Ok(Self { dir })
     }
 
     /// Get the path to the recipes JSONL file.
@@ -47,46 +33,35 @@ impl FileRecipesDb {
         self.dir.join("recipes.jsonl")
     }
 
-    /// Get the path to the index file.
-    fn index_file(&self) -> PathBuf {
-        self.dir.join("index.json")
+    /// Scan recipes file and find by predicate.
+    fn find_by<P>(&self, predicate: P) -> Result<Option<Recipe>>
+    where
+        P: Fn(&Recipe) -> bool,
+    {
+        if !self.recipes_file().exists() {
+            return Ok(None);
+        }
+
+        let file = File::open(self.recipes_file())?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(recipe) = serde_json::from_str::<Recipe>(&line)
+                && predicate(&recipe)
+            {
+                return Ok(Some(recipe));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Check if content hash already exists.
     pub fn exists_by_content_hash(&self, hash: &str) -> Result<bool> {
-        let index = self.index.read().unwrap();
-        Ok(index.by_content_hash.contains_key(hash))
-    }
-
-    /// Save index to disk.
-    fn save_index(&self) -> Result<()> {
-        let index = self.index.read().unwrap();
-        let persisted = PersistedIndex {
-            urls: index.by_url.clone(),
-            hashes: index.by_content_hash.clone(),
-            names: index.by_name.clone(),
-        };
-        let file = File::create(self.index_file())?;
-        serde_json::to_writer(file, &persisted)?;
-        Ok(())
-    }
-
-    /// Load index from disk.
-    #[allow(dead_code)]
-    fn load_index(&self) -> Result<()> {
-        if !self.index_file().exists() {
-            return Ok(());
-        }
-
-        let file = File::open(self.index_file())?;
-        let persisted: PersistedIndex = serde_json::from_reader(file)?;
-
-        let mut index = self.index.write().unwrap();
-        index.by_url = persisted.urls;
-        index.by_content_hash = persisted.hashes;
-        index.by_name = persisted.names;
-
-        Ok(())
+        Ok(self
+            .find_by(|r| r.content_hash.as_deref() == Some(hash))?
+            .is_some())
     }
 }
 
@@ -97,9 +72,10 @@ impl RecipesStorage for FileRecipesDb {
             && self.exists_by_content_hash(hash)?
         {
             // Return existing ID
-            let index = self.index.read().unwrap();
-            if let Some(id) = index.by_content_hash.get(hash) {
-                return Ok(id.clone());
+            if let Some(existing) =
+                self.find_by(|r| r.content_hash.as_deref() == Some(hash))?
+            {
+                return Ok(existing.id);
             }
         }
 
@@ -121,119 +97,72 @@ impl RecipesStorage for FileRecipesDb {
         let json = serde_json::to_string(&recipe)?;
         writeln!(writer, "{}", json)?;
 
-        // Update index
-        {
-            let mut index = self.index.write().unwrap();
-            index
-                .by_url
-                .insert(recipe.source_url.to_string(), id.clone());
-            if let Some(hash) = &recipe.content_hash {
-                index.by_content_hash.insert(hash.clone(), id.clone());
-            }
-            index
-                .by_name
-                .push((recipe.name.to_lowercase(), id.clone()));
-        }
-
-        // Persist index
-        self.save_index()?;
-
         Ok(id)
     }
 
     fn get(&self, id: &RecipeId) -> Result<Option<Recipe>> {
+        self.find_by(|r| &r.id == id)
+    }
+
+    fn exists_by_url(&self, url: &str) -> Result<bool> {
+        Ok(self.find_by(|r| r.source_url.as_str() == url)?.is_some())
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<RecipeId>> {
+        let query = query.to_lowercase();
+        let terms: Vec<&str> = query.split_whitespace().collect();
+
+        let mut results = Vec::new();
+
+        if !self.recipes_file().exists() {
+            return Ok(results);
+        }
+
         let file = File::open(self.recipes_file())?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
             let line = line?;
-            if let Ok(recipe) = serde_json::from_str::<Recipe>(&line)
-                && &recipe.id == id
-            {
-                return Ok(Some(recipe));
+            if let Ok(recipe) = serde_json::from_str::<Recipe>(&line) {
+                let name_lower = recipe.name.to_lowercase();
+                if terms.iter().all(|t| name_lower.contains(t)) {
+                    results.push(recipe.id);
+                }
             }
         }
-
-        Ok(None)
-    }
-
-    fn exists_by_url(&self, url: &str) -> Result<bool> {
-        let index = self.index.read().unwrap();
-        Ok(index.by_url.contains_key(url))
-    }
-
-    fn search(&self, query: &str) -> Result<Vec<RecipeId>> {
-        let index = self.index.read().unwrap();
-        let query = query.to_lowercase();
-        let terms: Vec<&str> = query.split_whitespace().collect();
-
-        let mut results: Vec<RecipeId> = index
-            .by_name
-            .iter()
-            .filter(|(name, _)| terms.iter().all(|t| name.contains(t)))
-            .map(|(_, id)| id.clone())
-            .collect();
-
-        // Deduplicate
-        results.sort_by(|a, b| a.0.cmp(&b.0));
-        results.dedup_by(|a, b| a.0 == b.0);
 
         Ok(results)
     }
 
-    fn rebuild_index(&self) -> Result<()> {
-        let mut index = SearchIndex::default();
-
-        if let Ok(file) = File::open(self.recipes_file()) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                if let Ok(recipe) = serde_json::from_str::<Recipe>(&line) {
-                    index
-                        .by_url
-                        .insert(recipe.source_url.to_string(), recipe.id.clone());
-                    if let Some(hash) = &recipe.content_hash {
-                        index.by_content_hash.insert(hash.clone(), recipe.id.clone());
-                    }
-                    index
-                        .by_name
-                        .push((recipe.name.to_lowercase(), recipe.id.clone()));
-                }
-            }
+    fn count(&self) -> Result<u64> {
+        if !self.recipes_file().exists() {
+            return Ok(0);
         }
 
-        *self.index.write().unwrap() = index;
-        self.save_index()?;
-
-        Ok(())
-    }
-
-    fn count(&self) -> Result<u64> {
-        let index = self.index.read().unwrap();
-        Ok(index.by_url.len() as u64)
+        let file = File::open(self.recipes_file())?;
+        let reader = BufReader::new(file);
+        Ok(reader.lines().filter(|l| l.is_ok()).count() as u64)
     }
 
     fn all(&self) -> Result<Vec<Recipe>> {
         let mut recipes = Vec::new();
-        if let Ok(file) = File::open(self.recipes_file()) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                if let Ok(recipe) = serde_json::from_str::<Recipe>(&line) {
-                    recipes.push(recipe);
-                }
+
+        if !self.recipes_file().exists() {
+            return Ok(recipes);
+        }
+
+        let file = File::open(self.recipes_file())?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(recipe) = serde_json::from_str::<Recipe>(&line) {
+                recipes.push(recipe);
             }
         }
+
         Ok(recipes)
     }
-}
-
-/// Persisted index structure.
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedIndex {
-    urls: std::collections::HashMap<String, RecipeId>,
-    hashes: std::collections::HashMap<String, RecipeId>,
-    names: Vec<(String, RecipeId)>,
 }
 
 #[cfg(test)]
@@ -320,20 +249,6 @@ mod tests {
 
         let results = db.search("chocolate").unwrap();
         assert_eq!(results.len(), 2);
-    }
-
-    #[test]
-    fn rebuild_index_restores_state() {
-        let dir = tempdir().unwrap();
-        let db = FileRecipesDb::open(dir.path().to_path_buf()).unwrap();
-
-        let recipe = test_recipe("Test", "https://example.com/test");
-        db.insert(&recipe).unwrap();
-
-        // Open a new instance
-        let db2 = FileRecipesDb::open(dir.path().to_path_buf()).unwrap();
-
-        assert!(db2.exists_by_url("https://example.com/test").unwrap());
     }
 
     #[test]

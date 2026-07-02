@@ -3,7 +3,7 @@
 //! Signals are appended to date-based JSONL files for audit trails
 //! and later compression into knowledge.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 
@@ -160,8 +160,6 @@ impl SignalStorage for FileSignalLog {
     }
 }
 
-// Need to import OpenOptions
-use std::fs::OpenOptions;
 
 #[cfg(test)]
 mod tests {

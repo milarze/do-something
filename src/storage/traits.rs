@@ -25,9 +25,6 @@ pub trait RecipesStorage: Send + Sync {
     /// Full-text search across recipes.
     fn search(&self, query: &str) -> Result<Vec<RecipeId>>;
 
-    /// Rebuild the search index.
-    fn rebuild_index(&self) -> Result<()>;
-
     /// Count total recipes.
     fn count(&self) -> Result<u64>;
 

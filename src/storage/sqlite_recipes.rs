@@ -89,6 +89,32 @@ impl SqliteRecipesDb {
     fn ingredients_to_text(ingredients: &[crate::models::recipe::Ingredient]) -> String {
         ingredients.iter().map(|i| i.raw.as_str()).collect::<Vec<_>>().join(" ")
     }
+
+    /// Rebuild the full-text search index.
+    ///
+    /// This is SQLite-specific and not part of the trait.
+    pub fn rebuild_fts_index(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("INSERT INTO recipes_fts(recipes_fts) VALUES ('rebuild')", [])?;
+        Ok(())
+    }
+
+    /// Search with custom result limit.
+    pub fn search_with_limit(&self, query: &str, limit: usize) -> Result<Vec<RecipeId>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id FROM recipes_fts WHERE recipes_fts MATCH ? ORDER BY rank LIMIT ?"
+        )?;
+
+        let ids = stmt
+            .query_map(params![query, limit as i64], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .map(RecipeId::new)
+            .collect();
+
+        Ok(ids)
+    }
 }
 
 impl RecipesStorage for SqliteRecipesDb {
@@ -210,25 +236,7 @@ impl RecipesStorage for SqliteRecipesDb {
     }
 
     fn search(&self, query: &str) -> Result<Vec<RecipeId>> {
-        let conn = self.conn.lock().unwrap();
-        
-        let mut stmt = conn.prepare(
-            "SELECT id FROM recipes_fts WHERE recipes_fts MATCH ? ORDER BY rank LIMIT 100"
-        )?;
-        
-        let ids = stmt
-            .query_map(params![query], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .map(RecipeId::new)
-            .collect();
-
-        Ok(ids)
-    }
-
-    fn rebuild_index(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT INTO recipes_fts(recipes_fts) VALUES ('rebuild')", [])?;
-        Ok(())
+        self.search_with_limit(query, 100)
     }
 
     fn count(&self) -> Result<u64> {
