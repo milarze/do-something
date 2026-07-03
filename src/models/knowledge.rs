@@ -151,7 +151,7 @@ impl SiteStats {
 // ============================================================================
 
 /// Learned preferences for a user.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserModel {
     /// User identifier (or "default" for single-user mode).
     #[serde(default = "default_user_id")]
