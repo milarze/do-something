@@ -35,21 +35,20 @@ impl SiteConfigManager {
 
     /// Merge configuration with a fallback.
     ///
-    /// Values present in self are kept; missing values use fallback.
+    /// Values present in config are always kept (explicitly set).
+    /// Missing/empty values (headers, skip_patterns, selectors) use fallback.
+    ///
+    /// Note: preferred_method and rate_limit_ms are always taken from config
+    /// since there's no way to distinguish "not set" from "set to default".
     pub fn merge_with_fallback(config: &SiteConfig, fallback: &SiteConfig) -> SiteConfig {
         SiteConfig {
             domain: config.domain.clone(),
-            preferred_method: if config.preferred_method == ParseMethod::SchemaOrg {
-                fallback.preferred_method
-            } else {
-                config.preferred_method
-            },
+            // Always use config's method - it was explicitly set
+            preferred_method: config.preferred_method,
             selectors: merge_selectors(&config.selectors, &fallback.selectors),
-            rate_limit_ms: if config.rate_limit_ms == 1000 {
-                fallback.rate_limit_ms
-            } else {
-                config.rate_limit_ms
-            },
+            // Always use config's rate limit - it was explicitly set
+            rate_limit_ms: config.rate_limit_ms,
+            // JS requirement is OR'd - if either needs it, use it
             requires_js: config.requires_js || fallback.requires_js,
             headers: if config.headers.is_empty() {
                 fallback.headers.clone()
@@ -154,6 +153,19 @@ pub mod defaults {
     use crate::models::ParseMethod;
     use std::collections::HashMap;
 
+    /// Default User-Agent for requests to recipe sites.
+    ///
+    /// Using a realistic browser User-Agent helps avoid basic bot detection.
+    /// This is a standard Chrome on macOS User-Agent string.
+    ///
+    /// Note: For production use, consider:
+    /// - Rotating User-Agents
+    /// - Using the `user-agent-from-env` feature to allow configuration
+    /// - Respecting robots.txt and rate limits regardless of User-Agent
+    const DEFAULT_USER_AGENT: &str =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+         (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
     /// Get default config for a known domain, if available.
     pub fn get(domain: &str) -> Option<SiteConfig> {
         match domain {
@@ -183,7 +195,7 @@ pub mod defaults {
 
     fn allrecipes() -> SiteConfig {
         let mut headers = HashMap::new();
-        headers.insert("User-Agent".to_string(), "Mozilla/5.0".to_string());
+        headers.insert("User-Agent".to_string(), DEFAULT_USER_AGENT.to_string());
 
         SiteConfig {
             domain: "allrecipes.com".to_string(),
@@ -373,17 +385,21 @@ mod tests {
     }
 
     #[test]
-    fn merge_uses_fallback_for_missing() {
+    fn merge_uses_fallback_for_empty() {
         let self_config = SiteConfig::new("test.com");
         
         let mut fallback = SiteConfig::new("fallback.com");
-        fallback.rate_limit_ms = 5000;
         fallback.requires_js = true;
+        fallback.skip_patterns = vec!["/video/".to_string()];
 
         let merged = SiteConfigManager::merge_with_fallback(&self_config, &fallback);
         
-        assert_eq!(merged.rate_limit_ms, 5000); // Used fallback
-        assert!(merged.requires_js);              // Used fallback
+        // Rate limit is always from config (explicitly set)
+        assert_eq!(merged.rate_limit_ms, 1000); // Config's default
+        // JS is OR'd
+        assert!(merged.requires_js);
+        // Empty skip_patterns uses fallback
+        assert_eq!(merged.skip_patterns, vec!["/video/"]);
     }
 
     #[test]

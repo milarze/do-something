@@ -10,12 +10,45 @@ use crate::models::knowledge::{Patterns, SiteConfig, UserModel};
 use super::store::KnowledgeStore;
 
 /// Default token budget for knowledge context.
+///
+/// This reserves tokens for learned knowledge in the system prompt,
+/// leaving room for conversation history and response generation.
+///
+/// Typical allocation for a 128k context window:
+/// - System prompt: ~4k tokens
+/// - Knowledge context: ~8k tokens (this constant)
+/// - Conversation history: ~100k tokens
+/// - Response generation: ~16k tokens
+///
+/// Adjust based on:
+/// - Model context window size
+/// - Average knowledge size for your use case
+/// - Required history depth
 pub const DEFAULT_TOKEN_BUDGET: u64 = 8000;
 
-/// Minimum token budget (to avoid empty context).
+/// Minimum tokens to allocate for knowledge context.
+///
+/// Below this threshold, knowledge becomes too sparse to be useful.
+/// Ensures at least some site config or patterns are included.
+///
+/// With 500 tokens, we can typically include:
+/// - 1 site config (~200 tokens), OR
+/// - 2-3 patterns (~150 tokens), OR
+/// - A minimal user model (~100 tokens)
 pub const MIN_TOKEN_BUDGET: u64 = 500;
 
-/// Estimated characters per token (rough approximation).
+/// Approximate characters per token for estimation.
+///
+/// This is a rough approximation for token counting without calling
+/// the model's tokenizer. Actual values vary by:
+///
+/// - Content type: English text averages ~4 chars/token
+/// - Code: often fewer chars per token (~3-3.5)
+/// - Whitespace-heavy content: more chars per token
+/// - Model-specific: GPT-4, Claude, Llama all differ slightly
+///
+/// We use 4 as a conservative middle-ground for recipe-related text
+/// which tends to be natural language with some structure.
 pub const CHARS_PER_TOKEN: usize = 4;
 
 /// Assembler for knowledge context injection.

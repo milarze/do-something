@@ -206,24 +206,40 @@ impl AntiPattern {
             return false;
         }
 
-        // Check if URL matches the pattern description
-        // Simple heuristic: look for keywords in the URL
+        // Parse URL for more precise matching
         let url_lower = url.to_lowercase();
         let desc_lower = self.description.to_lowercase();
 
-        // Extract potential URL patterns from description
-        // e.g., "URL ends with /video" -> check if url ends with /video
-        if desc_lower.contains("/video") && url_lower.contains("/video") {
-            return true;
+        // Match specific path patterns with boundaries
+        // "URL ends with /video" -> exact suffix match
+        if desc_lower.contains("ends with /video") || desc_lower.contains("url ends with /video") {
+            return url_lower.ends_with("/video") 
+                || url_lower.ends_with("/video/");
         }
-        if desc_lower.contains("/gallery") && url_lower.contains("/gallery") {
-            return true;
+
+        // "URL ends with /video - ..." format from default patterns
+        if desc_lower.contains("/video") {
+            // Check for video path segment (not just substring)
+            return url_lower.contains("/video/") 
+                || url_lower.ends_with("/video");
         }
-        if desc_lower.contains("/videos") && url_lower.contains("/videos") {
-            return true;
+
+        // Gallery pattern
+        if desc_lower.contains("/gallery") {
+            return url_lower.contains("/gallery/") 
+                || url_lower.ends_with("/gallery");
         }
-        if desc_lower.contains("/shows") && url_lower.contains("/shows") {
-            return true;
+
+        // Videos (plural) pattern
+        if desc_lower.contains("/videos") {
+            return url_lower.contains("/videos/") 
+                || url_lower.ends_with("/videos");
+        }
+
+        // Shows pattern
+        if desc_lower.contains("/shows") {
+            return url_lower.contains("/shows/") 
+                || url_lower.ends_with("/shows");
         }
 
         false
@@ -297,6 +313,48 @@ mod tests {
             "https://tasty.co/recipe/123",
             "tasty.co"
         ));
+    }
+
+    #[test]
+    fn video_tips_url_does_not_match_video_pattern() {
+        let patterns = PatternMatcher::default_patterns();
+
+        // "video-tips" should NOT match the /video pattern (no path boundary)
+        let result = PatternMatcher::matches_anti_pattern(
+            &patterns,
+            "https://tasty.co/article/video-tips",
+            "tasty.co",
+        );
+        
+        // Should NOT match the video anti-pattern
+        if let Some(ap) = result {
+            assert!(!ap.description.to_lowercase().contains("video"), 
+                "video-tips should not match /video pattern");
+        }
+    }
+
+    #[test]
+    fn gallery_path_matches_correctly() {
+        let patterns = PatternMatcher::default_patterns();
+
+        // /gallery/ should match
+        assert!(PatternMatcher::matches_anti_pattern(
+            &patterns,
+            "https://allrecipes.com/recipe/gallery/test",
+            "allrecipes.com",
+        ).is_some());
+
+        // gallery-item should NOT match
+        let result = PatternMatcher::matches_anti_pattern(
+            &patterns,
+            "https://allrecipes.com/gallery-item/photo",
+            "allrecipes.com",
+        );
+        
+        if let Some(ap) = result {
+            assert!(!ap.description.to_lowercase().contains("gallery"),
+                "gallery-item should not match /gallery pattern");
+        }
     }
 
     #[test]

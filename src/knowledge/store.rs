@@ -18,6 +18,17 @@ use super::patterns::PatternMatcher;
 use super::site_config::SiteConfigManager;
 use super::user_model::UserModelManager;
 
+/// Cache time-to-live in seconds.
+///
+/// After this duration, cached values will be considered stale
+/// and reloaded from storage on next access.
+///
+/// A 5-minute TTL balances:
+/// - Freshness: Updates from other processes/threads are picked up quickly
+/// - Performance: Avoids excessive storage reads for frequently accessed data
+/// - Memory: Allows periodic cache refresh to clear unused entries
+const CACHE_TTL_SECONDS: i64 = 300; // 5 minutes
+
 /// In-memory cache for knowledge data.
 #[derive(Debug, Default)]
 struct KnowledgeCache {
@@ -63,12 +74,31 @@ impl KnowledgeStore {
         }
     }
 
+    /// Check if cache needs refresh due to TTL expiry.
+    ///
+    /// Returns true if cache has never been refreshed or if TTL has elapsed.
+    fn is_cache_stale(&self) -> crate::storage::Result<bool> {
+        let cache = self.cache.read().map_err(|e| {
+            StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
+        })?;
+        
+        Ok(cache.last_refresh
+            .map(|t| (Utc::now() - t).num_seconds() > CACHE_TTL_SECONDS)
+            .unwrap_or(true))
+    }
+
     /// Get site configuration for a domain.
     ///
-    /// Returns from cache if available, otherwise loads from storage.
+    /// Returns from cache if available and fresh (within TTL),
+    /// otherwise loads from storage.
     /// Falls back to default config if not found.
     pub fn get_site_config(&self, domain: &str) -> crate::storage::Result<SiteConfig> {
-        // Try read from cache first
+        // Check if we need to refresh due to TTL
+        if self.is_cache_stale()? {
+            self.refresh()?;
+        }
+        
+        // Fast path: try read from cache first
         {
             let cache = self.cache.read().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
@@ -79,17 +109,23 @@ impl KnowledgeStore {
             }
         }
 
-        // Not in cache, load from storage
+        // Slow path: load from storage
         let config = match self.storage.get_site_config(domain)? {
             Some(c) => c,
             None => SiteConfig::new(domain),
         };
 
-        // Update cache
+        // Update cache with write lock, re-checking to prevent race
         {
             let mut cache = self.cache.write().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
             })?;
+            
+            // Another thread may have inserted while we were loading
+            if let Some(existing) = cache.site_configs.get(domain) {
+                return Ok(existing.clone());
+            }
+            
             cache.site_configs.insert(domain.to_string(), config.clone());
         }
 
@@ -121,7 +157,7 @@ impl KnowledgeStore {
     ///
     /// Creates default model if not exists.
     pub fn get_user_model(&self, user_id: &str) -> crate::storage::Result<UserModel> {
-        // Try read from cache first
+        // Fast path: try read from cache first
         {
             let cache = self.cache.read().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
@@ -132,17 +168,23 @@ impl KnowledgeStore {
             }
         }
 
-        // Not in cache, load from storage
+        // Slow path: load from storage
         let model = match self.storage.get_user_model(user_id)? {
             Some(m) => m,
-            None => UserModel::default_user(),
+            None => UserModelManager::create(user_id),
         };
 
-        // Update cache
+        // Update cache with write lock, re-checking to prevent race
         {
             let mut cache = self.cache.write().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
             })?;
+            
+            // Another thread may have inserted while we were loading
+            if let Some(existing) = cache.user_models.get(user_id) {
+                return Ok(existing.clone());
+            }
+            
             cache.user_models.insert(user_id.to_string(), model.clone());
         }
 
@@ -175,7 +217,7 @@ impl KnowledgeStore {
     ///
     /// Returns default if not exists.
     pub fn get_patterns(&self) -> crate::storage::Result<Patterns> {
-        // Try read from cache first
+        // Fast path: try read from cache first
         {
             let cache = self.cache.read().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
@@ -186,7 +228,7 @@ impl KnowledgeStore {
             }
         }
 
-        // Not in cache, load from storage
+        // Slow path: load from storage
         let patterns = self.storage.get_patterns()?;
         let patterns = if patterns.success_patterns.is_empty() && patterns.anti_patterns.is_empty() {
             // Storage returned empty, check for defaults
@@ -200,11 +242,17 @@ impl KnowledgeStore {
             patterns
         };
 
-        // Update cache
+        // Update cache with write lock, re-checking to prevent race
         {
             let mut cache = self.cache.write().map_err(|e| {
                 StorageError::Io(std::io::Error::other(format!("Cache lock error: {e}")))
             })?;
+            
+            // Another thread may have inserted while we were loading
+            if let Some(ref existing) = cache.patterns {
+                return Ok(existing.clone());
+            }
+            
             cache.patterns = Some(patterns.clone());
         }
 
@@ -264,16 +312,22 @@ impl KnowledgeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::mock::MockKnowledgeStorage;
     use crate::models::ParseMethod;
     use tempfile::tempdir;
 
-    // Helper to create a test knowledge store
+    // Helper to create a test knowledge store with real storage
     fn test_store() -> (KnowledgeStore, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let storage = Arc::new(crate::storage::FileKnowledgeStore::open(
             dir.path().join("knowledge"),
         ).unwrap());
         (KnowledgeStore::new(storage), dir)
+    }
+
+    // Helper to create a test store with mock storage (faster, no filesystem)
+    fn test_store_mock() -> KnowledgeStore {
+        KnowledgeStore::new(Arc::new(MockKnowledgeStorage::new()))
     }
 
     #[test]
@@ -371,5 +425,168 @@ mod tests {
         
         let ctx = store.load_for_context(Some("example.com"), 1000).unwrap();
         assert!(ctx.token_budget <= 1000);
+    }
+
+    #[test]
+    fn concurrent_cache_access_no_race() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let (store, _dir) = test_store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(10));
+
+        // First, save a config to storage (bypass cache)
+        let config = SiteConfig::new("concurrent-test.com");
+        store.storage.save_site_config(&config).unwrap();
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    // All threads try to get the same config simultaneously
+                    let result = store.get_site_config("concurrent-test.com").unwrap();
+                    result
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All threads should get the same config
+        assert!(results.iter().all(|r| r.domain == "concurrent-test.com"));
+        
+        // Verify cache only has one entry
+        let cache = store.cache.read().unwrap();
+        assert_eq!(cache.site_configs.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_user_model_access_no_race() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let (store, _dir) = test_store();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(5));
+
+        let handles: Vec<_> = (0..5)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    store.get_user_model("test-user").unwrap()
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All threads should get the same model
+        assert!(results.iter().all(|r| r.user_id == "test-user"));
+    }
+
+    #[test]
+    fn cache_ttl_triggers_refresh() {
+        let (store, _dir) = test_store();
+        
+        // Load a config into cache
+        let _ = store.get_site_config("example.com").unwrap();
+        
+        // Verify it's cached
+        {
+            let cache = store.cache.read().unwrap();
+            assert!(cache.site_configs.contains_key("example.com"));
+            assert!(cache.last_refresh.is_some());
+        }
+        
+        // Manually set last_refresh to simulate TTL expiry
+        {
+            let mut cache = store.cache.write().unwrap();
+            // Set last_refresh to 10 minutes ago (beyond the 5-minute TTL)
+            cache.last_refresh = Some(Utc::now() - chrono::Duration::seconds(600));
+        }
+        
+        // Access should trigger refresh due to stale cache
+        let is_stale = store.is_cache_stale().unwrap();
+        assert!(is_stale, "Cache should be stale after TTL expiry");
+    }
+
+    #[test]
+    fn fresh_cache_within_ttl() {
+        let (store, _dir) = test_store();
+        
+        // Fresh store should have stale cache (never refreshed)
+        assert!(store.is_cache_stale().unwrap());
+        
+        // Load something
+        let _ = store.get_site_config("example.com").unwrap();
+        
+        // Cache should now be fresh
+        assert!(!store.is_cache_stale().unwrap());
+    }
+
+    // Tests using mock storage (no filesystem dependency)
+    #[test]
+    fn mock_storage_site_config() {
+        let store = test_store_mock();
+        
+        let config = SiteConfig::new("mock-test.com");
+        store.update_site_config(&config).unwrap();
+        
+        let loaded = store.get_site_config("mock-test.com").unwrap();
+        assert_eq!(loaded.domain, "mock-test.com");
+    }
+
+    #[test]
+    fn mock_storage_user_model() {
+        let store = test_store_mock();
+        
+        let mut model = UserModelManager::create("test-user");
+        model.max_prep_time_minutes = Some(45);
+        store.update_user_model(&model).unwrap();
+        
+        let loaded = store.get_user_model("test-user").unwrap();
+        assert_eq!(loaded.user_id, "test-user");
+        assert_eq!(loaded.max_prep_time_minutes, Some(45));
+    }
+
+    #[test]
+    fn mock_storage_patterns() {
+        let store = test_store_mock();
+        
+        let patterns = PatternMatcher::default_patterns();
+        store.update_patterns(&patterns).unwrap();
+        
+        let loaded = store.get_patterns().unwrap();
+        assert!(!loaded.success_patterns.is_empty());
+    }
+
+    #[test]
+    fn mock_storage_concurrent_access() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let store = Arc::new(test_store_mock());
+        let barrier = Arc::new(Barrier::new(10));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let domain = format!("domain-{}.com", i % 3);
+                    store.get_site_config(&domain).unwrap()
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

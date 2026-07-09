@@ -5,6 +5,7 @@
 
 use crate::models::knowledge::UserModel;
 use crate::models::recipe::{Difficulty, Recipe};
+use std::collections::HashMap;
 
 /// Manager for user preference models.
 pub struct UserModelManager;
@@ -20,6 +21,7 @@ impl UserModelManager {
             require_quantities: false,
             max_ingredients: None,
             preferred_difficulty: None,
+            difficulty_counts: HashMap::new(),
             dietary_restrictions: Vec::new(),
             sample_size: 0,
             updated_at: chrono::Utc::now(),
@@ -57,8 +59,8 @@ impl UserModelManager {
         // Track dietary tags
         for tag in &recipe.tags {
             if !model.dietary_restrictions.contains(tag) {
-                // Only add if it appears multiple times (avoid noise)
-                // For simplicity, we add all unique tags seen
+                // Add all unique tags seen.
+                // Future improvement: track frequency and require N occurrences
                 model.dietary_restrictions.push(tag.clone());
             }
         }
@@ -96,9 +98,13 @@ impl UserModelManager {
     ///
     /// Confidence increases logarithmically with more samples.
     /// Call this before persisting the model.
+    ///
+    /// Formula: log2(sample_size + 1) / 10
+    /// - sample_size = 0 → confidence = 0.0
+    /// - sample_size = 1023 → confidence = 1.0 (since log2(1024) = 10)
     pub fn update_confidence(model: &mut UserModel) {
         // Confidence formula: log2(sample_size + 1) / 10
-        // Reaches 1.0 at ~1000 samples
+        // Reaches 1.0 at 1023 samples
         let sample_based_confidence = (model.sample_size as f64 + 1.0).log2() / 10.0;
         model.confidence = sample_based_confidence.min(1.0);
     }
@@ -116,35 +122,47 @@ impl UserModelManager {
         let mut factors = 0;
 
         // Check time constraints
-        if let Some(max_prep) = model.max_prep_time_minutes
-            && let Some(prep) = recipe.prep_time_minutes
-        {
-            factors += 1;
-            if prep > max_prep {
-                score *= 1.0 - ((prep - max_prep) as f64 / max_prep as f64).min(1.0);
+        if let Some(max_prep) = model.max_prep_time_minutes {
+            if max_prep == 0 {
+                return 0.0; // Invalid constraint - can't match
+            }
+            if let Some(prep) = recipe.prep_time_minutes {
+                factors += 1;
+                if prep > max_prep {
+                    score *= 1.0 - ((prep - max_prep) as f64 / max_prep as f64).min(1.0);
+                }
             }
         }
 
-        if let Some(max_cook) = model.max_cook_time_minutes
-            && let Some(cook) = recipe.cook_time_minutes
-        {
-            factors += 1;
-            if cook > max_cook {
-                score *= 1.0 - ((cook - max_cook) as f64 / max_cook as f64).min(1.0);
+        if let Some(max_cook) = model.max_cook_time_minutes {
+            if max_cook == 0 {
+                return 0.0; // Invalid constraint - can't match
+            }
+            if let Some(cook) = recipe.cook_time_minutes {
+                factors += 1;
+                if cook > max_cook {
+                    score *= 1.0 - ((cook - max_cook) as f64 / max_cook as f64).min(1.0);
+                }
             }
         }
 
-        if let Some(max_total) = model.max_total_time_minutes
-            && let Some(total) = recipe.total_time_minutes
-        {
-            factors += 1;
-            if total > max_total {
-                score *= 1.0 - ((total - max_total) as f64 / max_total as f64).min(1.0);
+        if let Some(max_total) = model.max_total_time_minutes {
+            if max_total == 0 {
+                return 0.0; // Invalid constraint - can't match
+            }
+            if let Some(total) = recipe.total_time_minutes {
+                factors += 1;
+                if total > max_total {
+                    score *= 1.0 - ((total - max_total) as f64 / max_total as f64).min(1.0);
+                }
             }
         }
 
         // Check ingredient count
         if let Some(max_ing) = model.max_ingredients {
+            if max_ing == 0 {
+                return 0.0; // Invalid constraint - can't match
+            }
             let count = recipe.ingredients.len() as u32;
             factors += 1;
             if count > max_ing {
@@ -195,10 +213,33 @@ impl UserModelManager {
     }
 
     /// Update difficulty preference.
+    ///
+    /// Tracks frequency of each difficulty and sets preference to most common.
     fn update_difficulty_preference(model: &mut UserModel, difficulty: &Difficulty) {
-        // Prefer the difficulty that appears most often
-        // For simplicity, track the most recent
-        model.preferred_difficulty = Some(*difficulty);
+        use Difficulty::*;
+        
+        // Increment count for this difficulty
+        let key = match difficulty {
+            Easy => "Easy",
+            Medium => "Medium",
+            Hard => "Hard",
+        };
+        let count = model.difficulty_counts.entry(key.to_string()).or_insert(0);
+        *count += 1;
+
+        // Set preference to most common difficulty
+        // Find the difficulty with the highest count
+        let easy_count = *model.difficulty_counts.get("Easy").unwrap_or(&0);
+        let medium_count = *model.difficulty_counts.get("Medium").unwrap_or(&0);
+        let hard_count = *model.difficulty_counts.get("Hard").unwrap_or(&0);
+        
+        model.preferred_difficulty = if easy_count >= medium_count && easy_count >= hard_count {
+            Some(Easy)
+        } else if medium_count >= hard_count {
+            Some(Medium)
+        } else {
+            Some(Hard)
+        };
     }
 }
 
@@ -430,5 +471,58 @@ mod tests {
 
         // Max should be reduced (tightened)
         assert!(model.max_prep_time_minutes.unwrap() < 60);
+    }
+
+    #[test]
+    fn zero_max_time_returns_zero_match() {
+        let mut model = UserModel::default_user();
+        model.max_prep_time_minutes = Some(0);
+        model.sample_size = 5; // Need sample_size > 0 to trigger preference matching
+        
+        let recipe = test_recipe();
+        let score = UserModelManager::matches_preferences(&model, &recipe);
+        
+        // Zero constraint is invalid, should return 0
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn difficulty_preference_tracks_frequency() {
+        let mut model = UserModel::default_user();
+
+        // Keep 3 Easy recipes
+        for _ in 0..3 {
+            let mut recipe = test_recipe();
+            recipe.difficulty = Some(Difficulty::Easy);
+            UserModelManager::record_recipe_kept(&mut model, &recipe);
+        }
+
+        // Keep 1 Medium recipe
+        let mut recipe = test_recipe();
+        recipe.difficulty = Some(Difficulty::Medium);
+        UserModelManager::record_recipe_kept(&mut model, &recipe);
+
+        // Keep 1 Hard recipe
+        let mut recipe = test_recipe();
+        recipe.difficulty = Some(Difficulty::Hard);
+        UserModelManager::record_recipe_kept(&mut model, &recipe);
+
+        // Preference should be Easy (most frequent)
+        assert_eq!(model.preferred_difficulty, Some(Difficulty::Easy));
+        assert_eq!(*model.difficulty_counts.get("Easy").unwrap_or(&0), 3);
+        assert_eq!(*model.difficulty_counts.get("Medium").unwrap_or(&0), 1);
+        assert_eq!(*model.difficulty_counts.get("Hard").unwrap_or(&0), 1);
+    }
+
+    #[test]
+    fn zero_max_ingredients_returns_zero_match() {
+        let mut model = UserModel::default_user();
+        model.max_ingredients = Some(0);
+        model.sample_size = 5;
+        
+        let recipe = test_recipe();
+        let score = UserModelManager::matches_preferences(&model, &recipe);
+        
+        assert_eq!(score, 0.0);
     }
 }
