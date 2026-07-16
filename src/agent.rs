@@ -332,7 +332,7 @@ pub async fn handle_prompt(
 
         if cancel.is_cancelled() {
             // Mark any pending tool calls as cancelled before returning.
-            for (_id_str, tc_id) in announced.iter() {
+            for tc_id in announced.values() {
                 let upd = ToolCallUpdate::new(
                     tc_id.clone(),
                     ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
