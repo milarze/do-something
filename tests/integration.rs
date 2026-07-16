@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
+use agent_client_protocol::schema::v1::{
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
     SessionNotification, SessionUpdate, SetSessionModeRequest, TextContent,
 };
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, Client, ConnectionTo};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -299,7 +300,7 @@ model = "second-model"
             // Switch to "second".
             conn.send_request(SetSessionModeRequest::new(
                 new_sess.session_id.clone(),
-                agent_client_protocol::schema::SessionModeId::new("second"),
+                agent_client_protocol::schema::v1::SessionModeId::new("second"),
             ))
             .block_task()
             .await?;

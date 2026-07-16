@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
     ClientCapabilities, ContentBlock, ContentChunk, CurrentModeUpdate, EmbeddedResourceResource,
     Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
@@ -13,6 +13,7 @@ use agent_client_protocol::schema::{
     SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, TextContent, ToolCall as AcpToolCall, ToolCallContent,
     ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    Content,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 use futures::StreamExt;
@@ -489,7 +490,7 @@ pub async fn handle_prompt(
                 ToolCallUpdateFields::new()
                     .status(status)
                     .content(vec![ToolCallContent::Content(
-                        agent_client_protocol::schema::Content::new(content_block),
+                        Content::new(content_block),
                     )]),
             );
             let _ = cx.send_notification(SessionNotification::new(
@@ -535,7 +536,7 @@ fn send_tool_update_failed(
         ToolCallUpdateFields::new()
             .status(ToolCallStatus::Failed)
             .content(vec![ToolCallContent::Content(
-                agent_client_protocol::schema::Content::new(ContentBlock::Text(TextContent::new(
+                Content::new(ContentBlock::Text(TextContent::new(
                     msg.to_string(),
                 ))),
             )]),
