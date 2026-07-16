@@ -3,7 +3,7 @@ mod config;
 mod llm;
 mod tools;
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     CancelNotification, InitializeRequest, NewSessionRequest, PromptRequest, SetSessionModeRequest,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Dispatch, Result};

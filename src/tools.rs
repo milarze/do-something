@@ -4,7 +4,7 @@
 //! Tools are advertised to the LLM only when the corresponding client
 //! capability was negotiated during `initialize`.
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     ClientCapabilities, CreateTerminalRequest, KillTerminalRequest, ReadTextFileRequest,
     ReleaseTerminalRequest, SessionId, TerminalOutputRequest, WaitForTerminalExitRequest,
     WriteTextFileRequest,
