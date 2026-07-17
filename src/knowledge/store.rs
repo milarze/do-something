@@ -447,8 +447,7 @@ mod tests {
                 thread::spawn(move || {
                     barrier.wait();
                     // All threads try to get the same config simultaneously
-                    let result = store.get_site_config("concurrent-test.com").unwrap();
-                    result
+                    store.get_site_config("concurrent-test.com").unwrap()
                 })
             })
             .collect();

@@ -110,13 +110,15 @@ impl KnowledgeStorage for MockKnowledgeStorage {
     }
 
     fn load_for_context(&self, domain: Option<&str>) -> Result<KnowledgeContext> {
-        let mut ctx = KnowledgeContext::default();
-        ctx.token_budget = 8000;
+        let mut ctx = KnowledgeContext {
+            token_budget: 8000,
+            ..Default::default()
+        };
 
-        if let Some(d) = domain {
-            if let Some(config) = self.get_site_config(d)? {
-                ctx.site_configs.push(serde_json::to_string(&config)?);
-            }
+        if let Some(d) = domain
+            && let Some(config) = self.get_site_config(d)?
+        {
+            ctx.site_configs.push(serde_json::to_string(&config)?);
         }
 
         let patterns = self.get_patterns()?;
