@@ -5,8 +5,6 @@
 //! - User preference models
 //! - Discovered patterns (success and anti-patterns)
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -151,7 +149,7 @@ impl SiteStats {
 // ============================================================================
 
 /// Learned preferences for a user.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserModel {
     /// User identifier (or "default" for single-user mode).
     #[serde(default = "default_user_id")]
@@ -180,6 +178,10 @@ pub struct UserModel {
     /// Preferred difficulty level.
     #[serde(default)]
     pub preferred_difficulty: Option<crate::models::recipe::Difficulty>,
+
+    /// Count of each difficulty level kept (for frequency tracking).
+    #[serde(default)]
+    pub difficulty_counts: HashMap<String, u32>,
 
     /// Dietary restrictions.
     #[serde(default)]
@@ -212,6 +214,7 @@ impl UserModel {
             require_quantities: false,
             max_ingredients: None,
             preferred_difficulty: None,
+            difficulty_counts: HashMap::new(),
             dietary_restrictions: Vec::new(),
             sample_size: 0,
             updated_at: Utc::now(),
@@ -332,6 +335,10 @@ mod tests {
 
     #[test]
     fn user_model_serialization() {
+        let mut difficulty_counts = HashMap::new();
+        difficulty_counts.insert("Easy".to_string(), 10);
+        difficulty_counts.insert("Medium".to_string(), 5);
+        
         let model = UserModel {
             user_id: "test-user".to_string(),
             max_prep_time_minutes: Some(30),
@@ -340,6 +347,7 @@ mod tests {
             require_quantities: true,
             max_ingredients: Some(10),
             preferred_difficulty: Some(crate::models::recipe::Difficulty::Easy),
+            difficulty_counts,
             dietary_restrictions: vec!["vegetarian".to_string()],
             sample_size: 15,
             updated_at: Utc::now(),

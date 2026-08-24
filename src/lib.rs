@@ -2,6 +2,7 @@
 
 pub mod models;
 pub mod storage;
+pub mod knowledge;
 
 pub use models::*;
 pub use storage::*;
