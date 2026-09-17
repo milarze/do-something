@@ -30,7 +30,7 @@ pub mod mock;
 
 pub use context::KnowledgeContextAssembler;
 pub use patterns::PatternMatcher;
-pub use site_config::{SiteConfigManager, defaults};
+pub use site_config::SiteConfigManager;
 pub use store::KnowledgeStore;
 pub use user_model::UserModelManager;
 

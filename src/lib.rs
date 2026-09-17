@@ -1,5 +1,6 @@
 //! Do-something: A self-improving recipe scraping agent.
 
+pub mod domain;
 pub mod models;
 pub mod storage;
 pub mod knowledge;
