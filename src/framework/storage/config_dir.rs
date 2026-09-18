@@ -1,7 +1,9 @@
 //! Config directory management.
 //!
-//! Manages the `~/.do-something` directory structure and provides
-//! paths to all subdirectories. This is framework-level infrastructure.
+//! Manages the root config directory and provides paths to generic,
+//! domain-agnostic subdirectories (state, sessions, checkpoint). Domain
+//! layers are responsible for their own directory layout on top of the
+//! root path exposed here.
 
 use std::env;
 use std::fs;
@@ -10,6 +12,9 @@ use std::path::PathBuf;
 use super::error::{Result, StorageError};
 
 /// Manages the config directory path resolution and initialization.
+///
+/// This is framework-level: it knows only about generic agent infrastructure
+/// directories. Domain-specific layouts live in the domain layer.
 #[derive(Debug, Clone)]
 pub struct ConfigDir {
     path: PathBuf,
@@ -34,38 +39,18 @@ impl ConfigDir {
         Self { path }
     }
 
-    /// Ensure directory structure exists.
+    /// Ensure the generic directory structure exists. Domain layers create
+    /// their own directories via their path helpers.
     pub fn init(&self) -> Result<()> {
         fs::create_dir_all(&self.path)?;
-        fs::create_dir_all(self.knowledge_dir())?;
-        fs::create_dir_all(self.knowledge_dir().join("site_configs"))?;
-        fs::create_dir_all(self.knowledge_dir().join("user_models"))?;
-        fs::create_dir_all(self.knowledge_dir().join("patterns"))?;
-        fs::create_dir_all(self.recipes_dir())?;
-        fs::create_dir_all(self.signals_dir())?;
         fs::create_dir_all(self.state_dir())?;
-        fs::create_dir_all(self.state_dir().join("sessions"))?;
+        fs::create_dir_all(self.sessions_dir())?;
         Ok(())
     }
 
     /// Get the root config directory path.
     pub fn path(&self) -> &std::path::Path {
         &self.path
-    }
-
-    /// Get knowledge directory path.
-    pub fn knowledge_dir(&self) -> PathBuf {
-        self.path.join("knowledge")
-    }
-
-    /// Get recipes directory path.
-    pub fn recipes_dir(&self) -> PathBuf {
-        self.path.join("recipes")
-    }
-
-    /// Get signals directory path.
-    pub fn signals_dir(&self) -> PathBuf {
-        self.path.join("signals")
     }
 
     /// Get state directory path.
@@ -76,21 +61,6 @@ impl ConfigDir {
     /// Get config file path.
     pub fn config_file(&self) -> PathBuf {
         self.path.join("config.json")
-    }
-
-    /// Get site configs directory path.
-    pub fn site_configs_dir(&self) -> PathBuf {
-        self.knowledge_dir().join("site_configs")
-    }
-
-    /// Get user models directory path.
-    pub fn user_models_dir(&self) -> PathBuf {
-        self.knowledge_dir().join("user_models")
-    }
-
-    /// Get patterns directory path.
-    pub fn patterns_dir(&self) -> PathBuf {
-        self.knowledge_dir().join("patterns")
     }
 
     /// Get sessions directory path.
@@ -127,33 +97,25 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_directory_structure() {
+    fn init_creates_generic_directory_structure() {
         let dir = tempdir().unwrap();
         let config = ConfigDir::from_path(dir.path().to_path_buf());
 
         config.init().unwrap();
 
         assert!(dir.path().exists());
-        assert!(config.knowledge_dir().exists());
-        assert!(config.recipes_dir().exists());
-        assert!(config.signals_dir().exists());
         assert!(config.state_dir().exists());
-        assert!(config.site_configs_dir().exists());
-        assert!(config.user_models_dir().exists());
-        assert!(config.patterns_dir().exists());
         assert!(config.sessions_dir().exists());
     }
 
     #[test]
-    fn subdirectory_paths_are_correct() {
+    fn generic_paths_are_correct() {
         let dir = tempdir().unwrap();
         let config = ConfigDir::from_path(dir.path().to_path_buf());
 
-        assert_eq!(config.knowledge_dir(), dir.path().join("knowledge"));
-        assert_eq!(config.recipes_dir(), dir.path().join("recipes"));
-        assert_eq!(config.signals_dir(), dir.path().join("signals"));
         assert_eq!(config.state_dir(), dir.path().join("state"));
         assert_eq!(config.config_file(), dir.path().join("config.json"));
+        assert_eq!(config.sessions_dir(), dir.path().join("state/sessions"));
         assert_eq!(
             config.checkpoint_file(),
             dir.path().join("state/compression_checkpoint.json")

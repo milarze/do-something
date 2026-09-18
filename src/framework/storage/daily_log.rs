@@ -63,12 +63,19 @@ impl<T: Serialize + DeserializeOwned> DailyLog<T> {
         while current <= to {
             let file_path = self.log_file_for_date(current);
             if file_path.exists() {
-                let file = File::open(file_path)?;
+                let file = File::open(&file_path)?;
                 let reader = BufReader::new(file);
                 for line in reader.lines() {
                     let line = line?;
-                    if let Ok(record) = serde_json::from_str::<T>(&line) {
-                        records.push(record);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<T>(&line) {
+                        Ok(record) => records.push(record),
+                        Err(e) => tracing::warn!(
+                            "skipping malformed record in {}: {e}",
+                            file_path.display()
+                        ),
                     }
                 }
             }
@@ -85,14 +92,20 @@ impl<T: Serialize + DeserializeOwned> DailyLog<T> {
             return Ok(Vec::new());
         }
 
-        let file = File::open(file_path)?;
+        let file = File::open(&file_path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
-            if let Ok(record) = serde_json::from_str::<T>(&line) {
-                records.push(record);
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<T>(&line) {
+                Ok(record) => records.push(record),
+                Err(e) => {
+                    tracing::warn!("skipping malformed record in {}: {e}", file_path.display())
+                }
             }
         }
 
@@ -143,7 +156,14 @@ impl<T: Serialize + DeserializeOwned> DailyLog<T> {
     fn count_records_in_file(&self, path: &std::path::Path) -> Result<u64> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        Ok(reader.lines().filter(|l| l.is_ok()).count() as u64)
+        let mut count = 0u64;
+        for line in reader.lines() {
+            match line {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("error reading line in {}: {e}", path.display()),
+            }
+        }
+        Ok(count)
     }
 
     /// List all available log dates.
@@ -173,6 +193,7 @@ impl<T: Serialize + DeserializeOwned> DailyLog<T> {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::io::Write;
     use tempfile::tempdir;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -295,5 +316,37 @@ mod tests {
         let dates = log.available_dates().unwrap();
         assert_eq!(dates.len(), 1);
         assert_eq!(dates[0], Utc::now().date_naive());
+    }
+
+    #[test]
+    fn read_range_skips_malformed_lines() {
+        let dir = tempdir().unwrap();
+        let log: DailyLog<TestRecord> = DailyLog::open(dir.path().to_path_buf()).unwrap();
+
+        log.append(&TestRecord {
+            id: 1,
+            message: "good".to_string(),
+        })
+        .unwrap();
+
+        // Corrupt today's file with a malformed line.
+        let today = Utc::now().date_naive();
+        let mut file = File::create(log.log_file_for_date(today)).unwrap();
+        writeln!(file).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&TestRecord {
+                id: 1,
+                message: "good".to_string()
+            })
+            .unwrap()
+        )
+        .unwrap();
+        writeln!(file, "{{not valid json}}").unwrap();
+
+        let records = log.read_range(today, today).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message, "good");
     }
 }

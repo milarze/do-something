@@ -7,16 +7,22 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::error::Result;
+use super::error::{Result, StorageError};
 
 /// Generic append-only database with index.
 ///
 /// Appends records to a JSONL file and maintains an index for O(1) lookups.
 pub struct AppendOnlyDb<T: Serialize + DeserializeOwned> {
     dir: PathBuf,
+    /// Serializes write operations (record append + index update) so the
+    /// recorded file offset always matches the actual line position.
+    /// Without this, concurrent inserters can each capture the same offset
+    /// before either writes, corrupting the ID→offset index.
+    write_lock: Mutex<()>,
     _marker: PhantomData<T>,
 }
 
@@ -26,6 +32,7 @@ impl<T: Serialize + DeserializeOwned> AppendOnlyDb<T> {
         fs::create_dir_all(&dir)?;
         Ok(Self {
             dir,
+            write_lock: Mutex::new(()),
             _marker: PhantomData,
         })
     }
@@ -45,6 +52,13 @@ impl<T: Serialize + DeserializeOwned> AppendOnlyDb<T> {
     where
         T: HasId,
     {
+        // Serialize the offset-capture + append + index-update sequence so
+        // that the offset recorded in the index points at this record's line.
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| StorageError::LockError(format!("lock poisoned: {}", e)))?;
+
         let id = T::generate_id();
 
         // Open records file for appending
@@ -100,9 +114,16 @@ impl<T: Serialize + DeserializeOwned> AppendOnlyDb<T> {
             return Ok(0);
         }
 
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let reader = BufReader::new(file);
-        Ok(reader.lines().filter(|l| l.is_ok()).count() as u64)
+        let mut count = 0u64;
+        for line in reader.lines() {
+            match line {
+                Ok(_) => count += 1,
+                Err(e) => tracing::warn!("error reading line in {}: {e}", path.display()),
+            }
+        }
+        Ok(count)
     }
 
     /// Iterate all records.
@@ -112,14 +133,18 @@ impl<T: Serialize + DeserializeOwned> AppendOnlyDb<T> {
             return Ok(Vec::new());
         }
 
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
-            if let Ok(record) = serde_json::from_str::<T>(&line) {
-                records.push(record);
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<T>(&line) {
+                Ok(record) => records.push(record),
+                Err(e) => tracing::warn!("skipping malformed record in {}: {e}", path.display()),
             }
         }
 
@@ -131,6 +156,13 @@ impl<T: Serialize + DeserializeOwned> AppendOnlyDb<T> {
     where
         T: HasId,
     {
+        // Hold the write lock so no concurrent insert can append a record
+        // (and update the index) while we are rebuilding it.
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| StorageError::LockError(format!("lock poisoned: {}", e)))?;
+
         let path = self.records_file();
         if !path.exists() {
             fs::write(self.index_file(), "{}")?;
@@ -200,6 +232,8 @@ pub trait HasId: Clone {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::io::Write;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -316,5 +350,63 @@ mod tests {
 
         let retrieved = db.get(&id2).unwrap().unwrap();
         assert_eq!(retrieved.value, "second");
+    }
+
+    #[test]
+    fn concurrent_inserts_are_all_retrievable() {
+        // Without the internal write lock, concurrent inserters can each
+        // capture the same stream offset before either writes, so the index
+        // points at the wrong line and later `get`s return the wrong record.
+        let dir = tempdir().unwrap();
+        let db = Arc::new(AppendOnlyDb::<TestRecord>::open(dir.path().to_path_buf()).unwrap());
+
+        const N: usize = 32;
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let db = db.clone();
+            handles.push(std::thread::spawn(move || {
+                db.insert(&TestRecord {
+                    id: None,
+                    value: format!("v{i}"),
+                })
+                .unwrap()
+            }));
+        }
+
+        let mut ids = Vec::with_capacity(N);
+        for h in handles {
+            ids.push(h.join().unwrap());
+        }
+
+        // Every record must be present and retrievable by its recorded offset.
+        assert_eq!(db.count().unwrap(), N as u64);
+        assert_eq!(db.all().unwrap().len(), N);
+        for id in &ids {
+            let record = db.get(id).unwrap().unwrap();
+            assert!(record.value.starts_with('v'));
+        }
+    }
+
+    #[test]
+    fn all_skips_malformed_lines() {
+        let dir = tempdir().unwrap();
+        let db: AppendOnlyDb<TestRecord> = AppendOnlyDb::open(dir.path().to_path_buf()).unwrap();
+
+        db.insert(&TestRecord {
+            id: None,
+            value: "good".to_string(),
+        })
+        .unwrap();
+
+        // Corrupt the records file with a malformed line.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(db.records_file())
+            .unwrap();
+        writeln!(file, "{{not valid json}}").unwrap();
+
+        let all = db.all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].value, "good");
     }
 }

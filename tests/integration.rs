@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, TextContent,
-};
 use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
+    SessionUpdate, SetSessionModeRequest, TextContent,
+};
 use agent_client_protocol::{Agent, Client, ConnectionTo};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -70,7 +70,10 @@ async fn smoke_text_prompt_round_trip() {
     let server = MockServer::start().await;
     server
         .push_chat(ScriptedResponse::text_only(
-            ["Hello, ", "world!"].into_iter().map(String::from).collect(),
+            ["Hello, ", "world!"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
         ))
         .await;
 
@@ -85,8 +88,7 @@ async fn smoke_text_prompt_round_trip() {
     let notifs = new_notifications();
     let notifs_handler = notifs.clone();
 
-    let transport =
-        agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
         .builder()
@@ -173,8 +175,7 @@ async fn slash_command_help_short_circuits() {
     let notifs = new_notifications();
     let notifs_handler = notifs.clone();
 
-    let transport =
-        agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
         .builder()
@@ -260,16 +261,13 @@ model = "second-model"
     );
     std::fs::write(&cfg_path, cfg).unwrap();
 
-    let (mut child, stdin, stdout) = spawn_agent(&[(
-        "DO_SOMETHING_CONFIG",
-        cfg_path.to_str().unwrap(),
-    )]);
+    let (mut child, stdin, stdout) =
+        spawn_agent(&[("DO_SOMETHING_CONFIG", cfg_path.to_str().unwrap())]);
 
     let notifs = new_notifications();
     let notifs_handler = notifs.clone();
 
-    let transport =
-        agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
         .builder()

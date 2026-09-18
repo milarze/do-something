@@ -8,7 +8,9 @@
 //! - Domain-specific signal types
 
 pub mod models;
+pub mod paths;
 pub mod storage;
 
 pub use models::*;
+pub use paths::RecipePaths;
 pub use storage::*;

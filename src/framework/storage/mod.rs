@@ -31,10 +31,9 @@ mod tests {
         let config = ConfigDir::from_path(dir.path().to_path_buf());
         config.init().unwrap();
 
-        // Verify all directories exist
-        assert!(config.recipes_dir().exists());
-        assert!(config.signals_dir().exists());
-        assert!(config.knowledge_dir().exists());
+        // Verify generic framework directories exist. Domain-specific
+        // directories are the domain layer's responsibility.
         assert!(config.state_dir().exists());
+        assert!(config.sessions_dir().exists());
     }
 }

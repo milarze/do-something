@@ -36,16 +36,6 @@ pub enum StorageError {
     /// Index corruption.
     #[error("Index corruption: {0}")]
     IndexCorruption(String),
-
-    /// Database error (for SQLite backends).
-    #[error("Database error: {0}")]
-    Database(String),
-}
-
-impl From<rusqlite::Error> for StorageError {
-    fn from(err: rusqlite::Error) -> Self {
-        StorageError::Database(err.to_string())
-    }
 }
 
 /// Framework-level storage result.
