@@ -211,7 +211,11 @@ pub enum StreamEvent {
 impl LlmClient {
     pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                env!("CARGO_PKG_NAME"),
+                "/",
+                env!("CARGO_PKG_VERSION")
+            ))
             .build()
             .context("building reqwest client")?;
         Ok(Self { http })
@@ -278,7 +282,10 @@ impl LlmClient {
         tools: &[ToolDef],
         cancel: CancellationToken,
     ) -> Result<Pin<Box<dyn Stream<Item = StreamEvent> + Send>>> {
-        let url = format!("{}/chat/completions", profile.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            profile.base_url.trim_end_matches('/')
+        );
 
         let mut body = serde_json::json!({
             "model": profile.model,
@@ -443,7 +450,9 @@ fn toml_to_json(v: toml::Value) -> serde_json::Value {
     match v {
         toml::Value::String(s) => J::String(s),
         toml::Value::Integer(i) => J::Number(i.into()),
-        toml::Value::Float(f) => serde_json::Number::from_f64(f).map(J::Number).unwrap_or(J::Null),
+        toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
         toml::Value::Boolean(b) => J::Bool(b),
         toml::Value::Datetime(d) => J::String(d.to_string()),
         toml::Value::Array(a) => J::Array(a.into_iter().map(toml_to_json).collect()),

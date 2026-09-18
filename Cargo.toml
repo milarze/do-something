@@ -29,8 +29,7 @@ url = { version = "2.5", features = ["serde"] }
 blake3 = "1"
 dirs = "6"
 
-# SQLite storage backend
-rusqlite = { version = "0.40", features = ["bundled"] }
+# Storage backends are file-based (JSONL/JSON); no native database dependency.
 
 [dev-dependencies]
 tempfile = "3"
