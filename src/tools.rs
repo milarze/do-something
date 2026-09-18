@@ -74,7 +74,8 @@ pub fn tool_defs(caps: &ClientCapabilities) -> Vec<ToolDef> {
             function: ToolDefFunction {
                 name: TOOL_LIST_FILES.into(),
                 description:
-                    "List the files in a directory of the user's workspace. Path must be absolute.".into(),
+                    "List the files in a directory of the user's workspace. Path must be absolute."
+                        .into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -135,10 +136,16 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     pub fn ok(text: impl Into<String>) -> Self {
-        Self { text: text.into(), ok: true }
+        Self {
+            text: text.into(),
+            ok: true,
+        }
     }
     pub fn err(text: impl Into<String>) -> Self {
-        Self { text: text.into(), ok: false }
+        Self {
+            text: text.into(),
+            ok: false,
+        }
     }
 }
 
@@ -198,8 +205,8 @@ async fn invoke_read_file(
     session_id: &SessionId,
     cancel: CancellationToken,
 ) -> Result<String> {
-    let a: ReadFileArgs = serde_json::from_str(args_json)
-        .map_err(|e| anyhow!("invalid arguments: {e}"))?;
+    let a: ReadFileArgs =
+        serde_json::from_str(args_json).map_err(|e| anyhow!("invalid arguments: {e}"))?;
     let path = absolute_path(&a.path)?;
     let mut req = ReadTextFileRequest::new(session_id.clone(), path);
     req.line = a.line;
@@ -214,8 +221,8 @@ async fn invoke_write_file(
     session_id: &SessionId,
     cancel: CancellationToken,
 ) -> Result<String> {
-    let a: WriteFileArgs = serde_json::from_str(args_json)
-        .map_err(|e| anyhow!("invalid arguments: {e}"))?;
+    let a: WriteFileArgs =
+        serde_json::from_str(args_json).map_err(|e| anyhow!("invalid arguments: {e}"))?;
     let path = absolute_path(&a.path)?;
     let bytes = a.content.len();
     let req = WriteTextFileRequest::new(session_id.clone(), path.clone(), a.content);
@@ -229,8 +236,8 @@ async fn invoke_list_files(
     session_id: &SessionId,
     cancel: CancellationToken,
 ) -> Result<String> {
-    let a: ListFilesArgs = serde_json::from_str(args_json)
-        .map_err(|e| anyhow!("invalid arguments: {e}"))?;
+    let a: ListFilesArgs =
+        serde_json::from_str(args_json).map_err(|e| anyhow!("invalid arguments: {e}"))?;
     let _ = absolute_path(&a.path)?;
     // No native fs: shell out via terminal/* (also gated on terminal capability).
     run_shell_via_client(
@@ -250,8 +257,8 @@ async fn invoke_run_shell(
     session_id: &SessionId,
     cancel: CancellationToken,
 ) -> Result<String> {
-    let a: RunShellArgs = serde_json::from_str(args_json)
-        .map_err(|e| anyhow!("invalid arguments: {e}"))?;
+    let a: RunShellArgs =
+        serde_json::from_str(args_json).map_err(|e| anyhow!("invalid arguments: {e}"))?;
     run_shell_via_client(cx, session_id, cancel, a.command, a.args, a.cwd).await
 }
 

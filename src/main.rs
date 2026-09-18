@@ -118,8 +118,7 @@ async fn main() -> Result<()> {
 }
 
 fn log_preflight(profile_name: &str, profile: &Profile, report: &PreflightReport) {
-    let any_signal =
-        report.health.is_some() || report.props.is_some() || !report.models.is_empty();
+    let any_signal = report.health.is_some() || report.props.is_some() || !report.models.is_empty();
     if !any_signal {
         tracing::warn!(
             "preflight: no response from server at {} — agent will start but prompts will fail until it is reachable",
@@ -140,9 +139,7 @@ fn log_preflight(profile_name: &str, profile: &Profile, report: &PreflightReport
         let model_path = p.model_path.as_deref().unwrap_or("<unknown>");
         let build = p.build_info.as_deref().unwrap_or("<unknown>");
         let slots = p.total_slots.unwrap_or(0);
-        tracing::info!(
-            "preflight: llama.cpp build={build} model_path={model_path} slots={slots}"
-        );
+        tracing::info!("preflight: llama.cpp build={build} model_path={model_path} slots={slots}");
         if slots <= 1 {
             tracing::warn!(
                 "preflight: server has only {slots} slot — concurrent requests will block. Consider --parallel N"

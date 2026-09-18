@@ -151,10 +151,13 @@ impl Config {
     }
 
     pub fn active_profile(&self) -> (&str, &Profile) {
-        let name = self
-            .default_profile
-            .as_deref()
-            .unwrap_or_else(|| self.profiles.keys().next().map(|s| s.as_str()).unwrap_or(""));
+        let name = self.default_profile.as_deref().unwrap_or_else(|| {
+            self.profiles
+                .keys()
+                .next()
+                .map(|s| s.as_str())
+                .unwrap_or("")
+        });
         let profile = self
             .profiles
             .get(name)

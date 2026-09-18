@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
-    ClientCapabilities, ContentBlock, ContentChunk, CurrentModeUpdate, EmbeddedResourceResource,
-    Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionId, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionMode,
-    SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    ClientCapabilities, Content, ContentBlock, ContentChunk, CurrentModeUpdate,
+    EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
+    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionId, SessionMode, SessionModeId,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, TextContent, ToolCall as AcpToolCall, ToolCallContent,
     ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    Content,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 use futures::StreamExt;
@@ -58,10 +58,7 @@ impl AgentState {
     }
 }
 
-pub async fn handle_initialize(
-    state: AgentState,
-    req: InitializeRequest,
-) -> InitializeResponse {
+pub async fn handle_initialize(state: AgentState, req: InitializeRequest) -> InitializeResponse {
     tracing::info!(
         "initialize: protocol_version={:?} client_caps={:?}",
         req.protocol_version,
@@ -100,11 +97,7 @@ pub async fn handle_new_session(
         cancel: CancellationToken::new(),
     };
     let session_id = SessionId::new(id.clone());
-    state
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(id.clone(), session);
+    state.sessions.lock().unwrap().insert(id.clone(), session);
 
     // Build a SessionModeState that exposes each configured profile as a mode.
     // The currently active profile is the current mode.
@@ -178,7 +171,10 @@ fn build_mode_state(state: &AgentState, current: &str) -> SessionModeState {
 fn slash_commands() -> Vec<AvailableCommand> {
     vec![
         AvailableCommand::new("help", "Show available slash commands"),
-        AvailableCommand::new("profiles", "List configured LLM profiles and the active one"),
+        AvailableCommand::new(
+            "profiles",
+            "List configured LLM profiles and the active one",
+        ),
     ]
 }
 
@@ -489,9 +485,7 @@ pub async fn handle_prompt(
                 tc_id.clone(),
                 ToolCallUpdateFields::new()
                     .status(status)
-                    .content(vec![ToolCallContent::Content(
-                        Content::new(content_block),
-                    )]),
+                    .content(vec![ToolCallContent::Content(Content::new(content_block))]),
             );
             let _ = cx.send_notification(SessionNotification::new(
                 session_id.clone(),
@@ -535,11 +529,9 @@ fn send_tool_update_failed(
         tc_id.clone(),
         ToolCallUpdateFields::new()
             .status(ToolCallStatus::Failed)
-            .content(vec![ToolCallContent::Content(
-                Content::new(ContentBlock::Text(TextContent::new(
-                    msg.to_string(),
-                ))),
-            )]),
+            .content(vec![ToolCallContent::Content(Content::new(
+                ContentBlock::Text(TextContent::new(msg.to_string())),
+            ))]),
     );
     let _ = cx.send_notification(SessionNotification::new(
         session_id.clone(),
@@ -634,10 +626,7 @@ fn extract_text(blocks: &[ContentBlock]) -> String {
                         buf.push('\n');
                     }
                     let mime = tr.mime_type.as_deref().unwrap_or("text/plain");
-                    buf.push_str(&format!(
-                        "[resource: {} ({mime})]\n{}",
-                        tr.uri, tr.text
-                    ));
+                    buf.push_str(&format!("[resource: {} ({mime})]\n{}", tr.uri, tr.text));
                 }
             }
             _ => {}
@@ -662,13 +651,15 @@ fn handle_slash_command(
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let cmd = parts.next()?;
     match cmd {
-        "/help" => Some("Available slash commands:\n\
+        "/help" => Some(
+            "Available slash commands:\n\
              - /help — show this help\n\
              - /profiles — list configured LLM profiles\n\
              \n\
              Tip: switch profile via the `session/set_mode` ACP method \
              (your client may expose this as a mode picker).\n"
-            .to_string()),
+                .to_string(),
+        ),
         "/profiles" => {
             let (active, _) = state.config.active_profile();
             // Active profile per *session* may differ from config default if the
@@ -691,10 +682,8 @@ fn handle_slash_command(
 
 fn send_text(cx: &ConnectionTo<Client>, session_id: &SessionId, text: &str) {
     let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(text)));
-    let notif = SessionNotification::new(
-        session_id.clone(),
-        SessionUpdate::AgentMessageChunk(chunk),
-    );
+    let notif =
+        SessionNotification::new(session_id.clone(), SessionUpdate::AgentMessageChunk(chunk));
     if let Err(e) = cx.send_notification(notif) {
         tracing::warn!("send_notification failed: {e}");
     }

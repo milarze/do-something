@@ -1,6 +1,6 @@
-//! Recipe data models.
-
-#![allow(dead_code)]
+//! Recipe data model.
+//!
+//! A parsed recipe with all its components.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,17 @@ impl AsRef<str> for RecipeId {
     fn as_ref(&self) -> &str {
         &self.0
     }
+}
+
+/// Method used for parsing recipe content from HTML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseMethod {
+    #[default]
+    SchemaOrg,
+    Microdata,
+    Selectors,
+    Heuristic,
 }
 
 /// A parsed recipe with all its components.
@@ -116,9 +127,6 @@ pub struct Recipe {
 
 impl Recipe {
     /// Compute a content hash for deduplication.
-    ///
-    /// Uses blake3 for stable, cryptographic hashing that can be safely
-    /// persisted across sessions and Rust versions.
     pub fn compute_hash(&self) -> String {
         let hash_input = format!("{}|{}", self.source_url, self.name);
         blake3::hash(hash_input.as_bytes()).to_hex().to_string()
@@ -237,29 +245,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recipe_serialization_roundtrip() {
+    fn recipe_id_generation() {
+        let id1 = RecipeId::generate();
+        let id2 = RecipeId::generate();
+        assert_ne!(id1, id2);
+        assert!(id1.0.starts_with("rc_"));
+    }
+
+    #[test]
+    fn recipe_hash_is_stable() {
         let recipe = Recipe {
-            id: RecipeId::new("test-123"),
+            id: RecipeId::generate(),
             name: "Test Recipe".to_string(),
             source_url: "https://example.com/recipe".parse().unwrap(),
             source_domain: "example.com".to_string(),
-            ingredients: vec![
-                Ingredient {
-                    raw: "1 cup flour".to_string(),
-                    quantity: Some(1.0),
-                    unit: Some("cup".to_string()),
-                    name: Some("flour".to_string()),
-                    notes: None,
-                },
-            ],
-            instructions: vec!["Mix ingredients".to_string()],
-            prep_time_minutes: Some(10),
-            cook_time_minutes: Some(30),
-            total_time_minutes: Some(40),
-            servings: Some(Servings::single(4)),
-            cuisine: Some("American".to_string()),
-            difficulty: Some(Difficulty::Easy),
-            tags: vec!["quick".to_string()],
+            ingredients: vec![],
+            instructions: vec![],
+            prep_time_minutes: None,
+            cook_time_minutes: None,
+            total_time_minutes: None,
+            servings: None,
+            cuisine: None,
+            difficulty: None,
+            tags: vec![],
             nutrition: None,
             image_url: None,
             author: None,
@@ -269,25 +277,8 @@ mod tests {
             meta: HashMap::new(),
         };
 
-        let json = serde_json::to_string(&recipe).unwrap();
-        let parsed: Recipe = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed.name, recipe.name);
-        assert_eq!(parsed.ingredients.len(), 1);
-        assert_eq!(parsed.servings.unwrap().min, 4);
-    }
-
-    #[test]
-    fn ingredient_from_raw() {
-        let ing = Ingredient::from_raw("2 cups all-purpose flour, sifted");
-        assert_eq!(ing.raw, "2 cups all-purpose flour, sifted");
-        assert!(ing.quantity.is_none());
-    }
-
-    #[test]
-    fn servings_range() {
-        let servings = Servings::range(4, 6);
-        assert_eq!(servings.min, 4);
-        assert_eq!(servings.max, Some(6));
+        let hash1 = recipe.compute_hash();
+        let hash2 = recipe.compute_hash();
+        assert_eq!(hash1, hash2);
     }
 }

@@ -1,7 +1,7 @@
 //! Config directory management.
 //!
 //! Manages the `~/.do-something` directory structure and provides
-//! paths to all subdirectories.
+//! paths to all subdirectories. This is framework-level infrastructure.
 
 use std::env;
 use std::fs;
@@ -97,6 +97,11 @@ impl ConfigDir {
     pub fn sessions_dir(&self) -> PathBuf {
         self.state_dir().join("sessions")
     }
+
+    /// Get checkpoint file path.
+    pub fn checkpoint_file(&self) -> PathBuf {
+        self.state_dir().join("compression_checkpoint.json")
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +154,9 @@ mod tests {
         assert_eq!(config.signals_dir(), dir.path().join("signals"));
         assert_eq!(config.state_dir(), dir.path().join("state"));
         assert_eq!(config.config_file(), dir.path().join("config.json"));
+        assert_eq!(
+            config.checkpoint_file(),
+            dir.path().join("state/compression_checkpoint.json")
+        );
     }
 }

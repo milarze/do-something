@@ -1,4 +1,6 @@
-//! Storage error types.
+//! Generic storage error type.
+//!
+//! Framework-level errors that are domain-agnostic.
 
 use std::io;
 use thiserror::Error;
@@ -23,13 +25,9 @@ pub enum StorageError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 
-    /// Recipe not found.
-    #[error("Recipe not found: {0}")]
-    RecipeNotFound(String),
-
-    /// Session not found.
-    #[error("Session not found: {0}")]
-    SessionNotFound(String),
+    /// Record not found.
+    #[error("Record not found: {0}")]
+    NotFoundById(String),
 
     /// Lock acquisition failed.
     #[error("Lock error: {0}")]
@@ -39,9 +37,30 @@ pub enum StorageError {
     #[error("Index corruption: {0}")]
     IndexCorruption(String),
 
-    /// SQLite database error.
+    /// Database error (for SQLite backends).
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(String),
 }
 
+impl From<rusqlite::Error> for StorageError {
+    fn from(err: rusqlite::Error) -> Self {
+        StorageError::Database(err.to_string())
+    }
+}
+
+/// Framework-level storage result.
 pub type Result<T> = std::result::Result<T, StorageError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_display() {
+        let err = StorageError::NotFound;
+        assert_eq!(err.to_string(), "Config directory not found");
+
+        let err = StorageError::InvalidPath("test".to_string());
+        assert_eq!(err.to_string(), "Invalid path: test");
+    }
+}

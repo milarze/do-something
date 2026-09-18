@@ -1,12 +1,31 @@
-//! Do-something: A self-improving recipe scraping agent.
+//! Do-something: A self-improving agent framework.
+//!
+//! This project separates two layers:
+//!
+//! - **Framework** (`src/framework/`) — generic infrastructure every learning agent
+//!   needs: storage primitives, compression loop, tool registry, context management.
+//!   Contains no domain symbols.
+//!
+//! - **Domain** (`src/domain/`) — concrete logic for one use case.
+//!   The recipe domain (`src/domain/recipe/`) is the first implementation.
+//!
+//! # Architecture
+//!
+//! The framework provides generic storage primitives (`DailyLog<T>`, `JsonStore<T>`,
+//! `AppendOnlyDb<T>`, `SessionStore<S>`). Domain stores wrap these and add
+//! domain-specific functionality.
 
-pub mod models;
-pub mod storage;
+pub mod domain;
+pub mod framework;
 
-pub use models::*;
-pub use storage::*;
+// Re-export commonly used types for convenience
+pub use domain::recipe::{
+    ParseMethod, Recipe, RecipeDb, RecipeId, RecipeKnowledgeStore, RecipePatterns, RecipeSignal,
+    RecipeSignalLog, RecipeSignalType, SiteConfig, UserModel,
+};
+pub use framework::storage::{ConfigDir, StorageError};
 
-// Re-export existing modules
+// Legacy modules - will be migrated or removed
 pub mod agent;
 pub mod config;
 pub mod llm;

@@ -1,16 +1,12 @@
-//! Signal logging models for feedback loops.
+//! Signal logging models for recipe domain.
 //!
-//! Signals are discrete events that capture:
-//! - Parse success/failure
-//! - Explicit feedback
-//! - Performance metrics
-
-#![allow(dead_code)]
+//! Signals are discrete events that capture parse outcomes,
+//! user feedback, and performance metrics.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::ParseMethod;
+use super::recipe::ParseMethod;
 
 /// Unique identifier for a signal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -23,16 +19,16 @@ impl SignalId {
     }
 }
 
-/// A discrete signal event.
+/// A discrete signal event in the recipe domain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Signal {
+pub struct RecipeSignal {
     /// Unique identifier.
     #[serde(default = "SignalId::generate")]
     pub id: SignalId,
 
     /// Type of signal.
     #[serde(rename = "type")]
-    pub signal_type: SignalType,
+    pub signal_type: RecipeSignalType,
 
     /// Domain this signal relates to (if applicable).
     #[serde(default)]
@@ -63,8 +59,8 @@ pub struct Signal {
     pub context: serde_json::Map<String, serde_json::Value>,
 }
 
-impl Signal {
-    pub fn new(signal_type: SignalType) -> Self {
+impl RecipeSignal {
+    pub fn new(signal_type: RecipeSignalType) -> Self {
         Self {
             id: SignalId::generate(),
             signal_type,
@@ -109,10 +105,10 @@ impl Signal {
     }
 }
 
-/// Types of signals the agent can record.
+/// Types of signals the recipe agent can record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SignalType {
+pub enum RecipeSignalType {
     // Parse outcome signals
     ParseSuccess {
         method: ParseMethod,
@@ -122,6 +118,17 @@ pub enum SignalType {
         method: ParseMethod,
         error: String,
         attempted_methods: Vec<ParseMethod>,
+    },
+
+    // Recipe lifecycle signals
+    RecipeSaved {
+        recipe_id: String,
+        has_image: bool,
+        ingredient_count: u32,
+    },
+    RecipeDeleted {
+        recipe_id: String,
+        reason: String,
     },
 
     // Explicit user feedback
@@ -150,15 +157,7 @@ pub enum SignalType {
         old_value: Option<String>,
         new_value: String,
     },
-
-    // Compression signals
-    CompressionRun {
-        signals_processed: u64,
-        patterns_extracted: u64,
-    },
 }
-
-
 
 /// Sentiment of explicit feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,75 +168,13 @@ pub enum Sentiment {
     Neutral,
 }
 
-/// Statistics about signal compression.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CompressionStats {
-    /// Number of signals processed.
-    pub signals_processed: u64,
-
-    /// Number of signals pruned.
-    pub signals_pruned: u64,
-
-    /// Number of patterns extracted.
-    pub patterns_extracted: u64,
-
-    /// Number of site configs updated.
-    pub configs_updated: u64,
-
-    /// Time taken for compression in milliseconds.
-    pub time_ms: u64,
-
-    /// When compression was run.
-    #[serde(default = "Utc::now")]
-    pub completed_at: DateTime<Utc>,
-}
-
-/// Aggregated statistics for a domain over a time period.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DomainStats {
-    /// Domain name.
-    pub domain: String,
-
-    /// Total parse attempts.
-    pub total_attempts: u64,
-
-    /// Successful parses.
-    pub successes: u64,
-
-    /// Failed parses.
-    pub failures: u64,
-
-    /// Successes by method.
-    #[serde(default)]
-    pub successes_by_method: HashMap<ParseMethod, u64>,
-
-    /// Failures by method.
-    #[serde(default)]
-    pub failures_by_method: HashMap<ParseMethod, u64>,
-
-    /// Average parse time in milliseconds.
-    pub avg_time_ms: f64,
-
-    /// Most common errors.
-    #[serde(default)]
-    pub common_errors: Vec<String>,
-
-    /// Time period start.
-    pub period_start: DateTime<Utc>,
-
-    /// Time period end.
-    pub period_end: DateTime<Utc>,
-}
-
-use std::collections::HashMap;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn signal_builder_pattern() {
-        let signal = Signal::new(SignalType::ParseSuccess {
+        let signal = RecipeSignal::new(RecipeSignalType::ParseSuccess {
             method: ParseMethod::SchemaOrg,
             time_ms: 350,
         })
@@ -246,22 +183,25 @@ mod tests {
         .with_recipe("rc_abc123");
 
         assert_eq!(signal.domain, Some("example.com".to_string()));
-        assert_eq!(signal.url, Some("https://example.com/recipe/123".to_string()));
+        assert_eq!(
+            signal.url,
+            Some("https://example.com/recipe/123".to_string())
+        );
         assert_eq!(signal.recipe_id, Some("rc_abc123".to_string()));
     }
 
     #[test]
     fn signal_serialization() {
-        let signal = Signal::new(SignalType::ParseSuccess {
+        let signal = RecipeSignal::new(RecipeSignalType::ParseSuccess {
             method: ParseMethod::SchemaOrg,
             time_ms: 350,
         });
 
         let json = serde_json::to_string(&signal).unwrap();
-        let parsed: Signal = serde_json::from_str(&json).unwrap();
+        let parsed: RecipeSignal = serde_json::from_str(&json).unwrap();
 
         match parsed.signal_type {
-            SignalType::ParseSuccess { method, time_ms } => {
+            RecipeSignalType::ParseSuccess { method, time_ms } => {
                 assert_eq!(method, ParseMethod::SchemaOrg);
                 assert_eq!(time_ms, 350);
             }
@@ -271,7 +211,7 @@ mod tests {
 
     #[test]
     fn explicit_feedback_signal() {
-        let signal = Signal::new(SignalType::ExplicitFeedback {
+        let signal = RecipeSignal::new(RecipeSignalType::ExplicitFeedback {
             feedback: "That's a video page, not a recipe".to_string(),
             url: Some("https://tasty.co/recipe/123/video".to_string()),
             recipe_id: None,
