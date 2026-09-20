@@ -36,7 +36,7 @@ impl RecipeLearningDomain {
             match pattern {
                 RecipePattern::Success(sp) => {
                     for site in &sp.sites {
-                        if sp.confidence >= self.config.confidence_threshold {
+                        if sp.confidence >= self.config.confidence_threshold.get() {
                             let mut config = self
                                 .knowledge
                                 .get_site_config(site)?
@@ -60,7 +60,7 @@ impl RecipeLearningDomain {
                 }
                 RecipePattern::Anti(ap) => {
                     for site in &ap.sites {
-                        if ap.confidence >= self.config.confidence_threshold {
+                        if ap.confidence >= self.config.confidence_threshold.get() {
                             let mut config = self
                                 .knowledge
                                 .get_site_config(site)?
@@ -100,6 +100,7 @@ impl RecipeLearningDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::learning::Probability;
     use crate::domain::recipe::models::patterns::{AntiPattern, SuccessPattern};
     use crate::domain::recipe::models::recipe::ParseMethod;
     use crate::domain::recipe::storage::RecipeKnowledgeStore;
@@ -113,7 +114,7 @@ mod tests {
         let domain = RecipeLearningDomain::new(
             knowledge,
             CompressionConfig {
-                confidence_threshold: conf,
+                confidence_threshold: Probability::new(conf).unwrap(),
                 ..Default::default()
             },
         );

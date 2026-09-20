@@ -23,14 +23,14 @@ impl<D: LearningDomain> CompressionRunner<D> {
         // Condition 1: schedule interval exceeded.
         let checkpoint = self.checkpoint.load()?;
         let elapsed = Utc::now().signed_duration_since(checkpoint.last_run);
-        if elapsed > chrono::Duration::days(self.config.schedule_interval_days as i64) {
+        if elapsed > chrono::Duration::days(self.config.schedule_interval_days.get() as i64) {
             return Ok(true);
         }
 
         // Condition 2: signal count threshold met.
         let count = self
             .signal_log
-            .count_matching(self.config.lookback_days, |s| {
+            .count_matching(self.config.lookback_days.get(), |s| {
                 D::signal_domain(s) == Some(domain)
             })?;
         if count >= self.config.signal_count_threshold {

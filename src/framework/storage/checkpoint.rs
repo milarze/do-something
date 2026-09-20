@@ -91,6 +91,7 @@ impl Default for Checkpoint {
 }
 
 /// Statistics from a compression run.
+#[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionStats {
     /// Number of signals processed.

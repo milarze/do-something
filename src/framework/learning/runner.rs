@@ -63,7 +63,7 @@ impl<D: LearningDomain> CompressionRunner<D> {
         let configs_updated = self.domain.update_knowledge(&patterns)?;
 
         // Stage 4: prune old signals (framework).
-        let pruned = self.signal_log.prune(self.config.retention_days)?;
+        let pruned = self.signal_log.prune(self.config.retention_days.get())?;
 
         let result = CompressionStats {
             signals_processed: stats.total_count(),
@@ -102,6 +102,7 @@ impl<D: LearningDomain> CompressionRunner<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::learning::stats::RetentionDays;
     use serde::{Deserialize, Serialize};
     use tempfile::tempdir;
     use thiserror::Error;
@@ -278,7 +279,8 @@ mod tests {
         let runner = default_runner(dir.path());
 
         append_signal(&runner, "toy.com", true);
-        runner.run(Some("toy.com"), 1).unwrap();
+        let stats = runner.run(Some("toy.com"), 1).unwrap();
+        assert_eq!(stats.signals_processed, 1);
 
         let cp = runner.checkpoint.load().unwrap();
         assert_eq!(cp.last_domain.as_deref(), Some("toy.com"));
@@ -318,7 +320,7 @@ mod tests {
             3,
             CompressionConfig {
                 min_sample_size: 1,
-                retention_days: 5,
+                retention_days: RetentionDays::new(5).unwrap(),
                 ..Default::default()
             },
         );

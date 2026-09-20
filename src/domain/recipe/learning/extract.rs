@@ -43,7 +43,7 @@ impl RecipeLearningDomain {
 
         // Success pattern: best method above the success-rate threshold.
         if let Some((method, success_rate)) = stats.best_method()
-            && success_rate >= self.config.min_success_rate
+            && success_rate >= self.config.min_success_rate.get()
         {
             let confidence = self.confidence_of(stats.total_successes, stats.total_count());
             patterns.push(RecipePattern::Success(SuccessPattern {
@@ -106,6 +106,7 @@ impl RecipeLearningDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::learning::Probability;
     use crate::domain::recipe::learning::aggregate::{
         ErrorFrequency, MethodStats, RecipeAggregatedStats,
     };
@@ -172,8 +173,8 @@ mod tests {
     fn default_config() -> CompressionConfig {
         CompressionConfig {
             min_sample_size: 10,
-            confidence_threshold: 0.5,
-            min_success_rate: 0.8,
+            confidence_threshold: Probability::new(0.5).unwrap(),
+            min_success_rate: Probability::new(0.8).unwrap(),
             ..Default::default()
         }
     }

@@ -59,6 +59,7 @@ impl LearningDomain for RecipeLearningDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::learning::Probability;
     use crate::domain::recipe::models::recipe::ParseMethod;
     use crate::domain::recipe::models::signal::{RecipeSignal, RecipeSignalType};
     use crate::domain::recipe::storage::{KnowledgeStorage, RecipeKnowledgeStore};
@@ -72,8 +73,8 @@ mod tests {
         let knowledge = Arc::new(RecipeKnowledgeStore::open(dir.path().join("knowledge")).unwrap());
         let config = CompressionConfig {
             min_sample_size: 5,
-            confidence_threshold: 0.5,
-            min_success_rate: 0.7,
+            confidence_threshold: Probability::new(0.5).unwrap(),
+            min_success_rate: Probability::new(0.7).unwrap(),
             ..Default::default()
         };
         let domain = Arc::new(RecipeLearningDomain::new(knowledge.clone(), config.clone()));
@@ -117,8 +118,8 @@ mod tests {
         let knowledge = Arc::new(RecipeKnowledgeStore::open(dir.path().join("knowledge")).unwrap());
         let config = CompressionConfig {
             min_sample_size: 5,
-            confidence_threshold: 0.1,
-            min_success_rate: 0.5,
+            confidence_threshold: Probability::new(0.1).unwrap(),
+            min_success_rate: Probability::new(0.5).unwrap(),
             ..Default::default()
         };
         let domain = Arc::new(RecipeLearningDomain::new(knowledge.clone(), config.clone()));

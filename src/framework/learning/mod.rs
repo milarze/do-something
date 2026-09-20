@@ -13,4 +13,6 @@ pub mod stats;
 pub use confidence::{sample_confidence, wilson_score};
 pub use domain::{DomainStats, LearningDomain};
 pub use runner::CompressionRunner;
-pub use stats::CompressionConfig;
+pub use stats::{
+    CompressionConfig, ConfigError, LookbackDays, Probability, RetentionDays, ScheduleIntervalDays,
+};
