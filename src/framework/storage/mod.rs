@@ -13,7 +13,7 @@ pub mod json_store;
 pub mod session_store;
 
 pub use append_only_db::AppendOnlyDb;
-pub use checkpoint::CheckpointStore;
+pub use checkpoint::{Checkpoint, CheckpointStore, CompressionStats};
 pub use config_dir::ConfigDir;
 pub use daily_log::DailyLog;
 pub use error::{Result, StorageError};
