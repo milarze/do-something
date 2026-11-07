@@ -20,9 +20,11 @@ pub mod framework;
 
 // Re-export commonly used types for convenience
 pub use domain::recipe::{
-    ParseMethod, Recipe, RecipeDb, RecipeId, RecipeKnowledgeStore, RecipePatterns, RecipeSignal,
-    RecipeSignalLog, RecipeSignalType, SiteConfig, UserModel,
+    ParseMethod, Recipe, RecipeAggregatedStats, RecipeDb, RecipeId, RecipeKnowledgeStore,
+    RecipeLearningDomain, RecipePattern, RecipePatterns, RecipeSignal, RecipeSignalLog,
+    RecipeSignalType, SiteConfig, UserModel,
 };
+pub use framework::learning::{CompressionConfig, CompressionRunner, DomainStats, LearningDomain};
 pub use framework::storage::{ConfigDir, StorageError};
 
 // Legacy modules - will be migrated or removed

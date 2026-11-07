@@ -1,8 +1,10 @@
 //! Recipe knowledge store built over framework JsonStore.
 //!
 //! Provides persistence for site configs, user models, and patterns.
+//! Thread-safe via `RwLock` for concurrent read/write access.
 
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 use crate::framework::storage::JsonStore;
 
@@ -40,10 +42,13 @@ impl KnowledgeContext {
 }
 
 /// Persistence for site configs, user models, and patterns.
+///
+/// Thread-safe: uses `RwLock` to allow concurrent reads while
+/// serializing writes.
 pub struct RecipeKnowledgeStore {
-    configs: JsonStore<SiteConfig>,
-    users: JsonStore<UserModel>,
-    patterns: JsonStore<RecipePatterns>,
+    configs: RwLock<JsonStore<SiteConfig>>,
+    users: RwLock<JsonStore<UserModel>>,
+    patterns: RwLock<JsonStore<RecipePatterns>>,
 }
 
 impl RecipeKnowledgeStore {
@@ -53,9 +58,9 @@ impl RecipeKnowledgeStore {
         let users = JsonStore::open(dir.join("user_models"))?;
         let patterns = JsonStore::open(dir.join("patterns"))?;
         Ok(Self {
-            configs,
-            users,
-            patterns,
+            configs: RwLock::new(configs),
+            users: RwLock::new(users),
+            patterns: RwLock::new(patterns),
         })
     }
 
@@ -70,21 +75,28 @@ impl RecipeKnowledgeStore {
         };
 
         // Load site config if domain specified
-        if let Some(d) = domain
-            && let Some(config) = self.configs.get(d)?
-        {
-            ctx.site_configs.push(serde_json::to_string(&config)?);
+        if let Some(d) = domain {
+            let configs = self.configs.read().unwrap();
+            if let Some(config) = configs.get(d)? {
+                ctx.site_configs.push(serde_json::to_string(&config)?);
+            }
         }
 
         // Load patterns
-        let patterns = self.patterns.load("patterns")?;
-        if !patterns.success_patterns.is_empty() || !patterns.anti_patterns.is_empty() {
-            ctx.patterns.push(serde_json::to_string(&patterns)?);
+        {
+            let patterns_store = self.patterns.read().unwrap();
+            let patterns = patterns_store.load("patterns")?;
+            if !patterns.success_patterns.is_empty() || !patterns.anti_patterns.is_empty() {
+                ctx.patterns.push(serde_json::to_string(&patterns)?);
+            }
         }
 
         // Load default user model
-        if let Some(model) = self.users.get("default")? {
-            ctx.user_model = Some(serde_json::to_string(&model)?);
+        {
+            let users = self.users.read().unwrap();
+            if let Some(model) = users.get("default")? {
+                ctx.user_model = Some(serde_json::to_string(&model)?);
+            }
         }
 
         // Estimate tokens (rough: ~4 chars per token)
@@ -102,42 +114,55 @@ impl KnowledgeStorage for RecipeKnowledgeStore {
         &self,
         domain: &str,
     ) -> crate::framework::storage::Result<Option<SiteConfig>> {
-        self.configs.get(domain)
+        let configs = self.configs.read().unwrap();
+        configs.get(domain)
     }
 
+    #[allow(clippy::readonly_write_lock)]
     fn save_site_config(&self, config: &SiteConfig) -> crate::framework::storage::Result<()> {
-        self.configs.put(&config.domain, config)
+        let configs = self.configs.write().unwrap();
+        configs.put(&config.domain, config)
     }
 
     fn list_site_configs(&self) -> crate::framework::storage::Result<Vec<String>> {
-        self.configs.list()
+        let configs = self.configs.read().unwrap();
+        configs.list()
     }
 
+    #[allow(clippy::readonly_write_lock)]
     fn delete_site_config(&self, domain: &str) -> crate::framework::storage::Result<()> {
-        self.configs.delete(domain)
+        let configs = self.configs.write().unwrap();
+        configs.delete(domain)
     }
 
     fn get_user_model(
         &self,
         user_id: &str,
     ) -> crate::framework::storage::Result<Option<UserModel>> {
-        self.users.get(user_id)
+        let users = self.users.read().unwrap();
+        users.get(user_id)
     }
 
+    #[allow(clippy::readonly_write_lock)]
     fn save_user_model(&self, model: &UserModel) -> crate::framework::storage::Result<()> {
-        self.users.put(&model.user_id, model)
+        let users = self.users.write().unwrap();
+        users.put(&model.user_id, model)
     }
 
     fn list_user_models(&self) -> crate::framework::storage::Result<Vec<String>> {
-        self.users.list()
+        let users = self.users.read().unwrap();
+        users.list()
     }
 
     fn get_patterns(&self) -> crate::framework::storage::Result<RecipePatterns> {
-        self.patterns.load("patterns")
+        let patterns = self.patterns.read().unwrap();
+        patterns.load("patterns")
     }
 
+    #[allow(clippy::readonly_write_lock)]
     fn save_patterns(&self, patterns: &RecipePatterns) -> crate::framework::storage::Result<()> {
-        self.patterns.save("patterns", patterns)
+        let patterns_store = self.patterns.write().unwrap();
+        patterns_store.save("patterns", patterns)
     }
 }
 
@@ -244,5 +269,32 @@ mod tests {
         let ctx = store.load_for_context(Some("example.com")).unwrap();
         assert_eq!(ctx.site_configs.len(), 1);
         assert!(ctx.user_model.is_some());
+    }
+
+    #[test]
+    fn concurrent_reads_are_safe() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(RecipeKnowledgeStore::open(dir.path().to_path_buf()).unwrap());
+
+        store
+            .save_site_config(&SiteConfig::new("test.com"))
+            .unwrap();
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                thread::spawn(move || {
+                    let config = store.get_site_config("test.com").unwrap().unwrap();
+                    assert_eq!(config.domain, "test.com");
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
