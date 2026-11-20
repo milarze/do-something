@@ -20,10 +20,11 @@ pub mod framework;
 
 // Re-export commonly used types for convenience
 pub use domain::recipe::{
-    FetchHtmlTool, ParseMethod, ParseRecipeTool, RateLimiter, Recipe, RecipeAggregatedStats,
-    RecipeDb, RecipeId, RecipeKnowledgeStore, RecipeLearningDomain, RecipePattern, RecipePatterns,
-    RecipeSignal, RecipeSignalLog, RecipeSignalType, SaveRecipeTool, SearchTool, SiteConfig,
-    UserModel,
+    CompressSignalsTool, CompressionRunnerPort, ConfigBackupStore, FetchHtmlTool,
+    FileConfigBackupStore, GetKnowledgeTool, ParseMethod, ParseRecipeTool, RateLimiter,
+    RecordSignalTool, Recipe, RecipeAggregatedStats, RecipeDb, RecipeId, RecipeKnowledgeStore,
+    RecipeLearningDomain, RecipePattern, RecipePatterns, RecipeSignal, RecipeSignalLog,
+    RecipeSignalType, SaveRecipeTool, SearchTool, SiteConfig, UpdateConfigTool, UserModel,
 };
 pub use framework::learning::{CompressionConfig, CompressionRunner, DomainStats, LearningDomain};
 pub use framework::storage::{ConfigDir, StorageError};
