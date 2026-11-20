@@ -18,7 +18,7 @@ impl<D: LearningDomain> CompressionRunner<D> {
     /// - enough signals have accumulated for this domain.
     ///
     /// These correspond to the time-based and signal-count triggers in the
-    /// compression pipeline specification.
+    /// compression pipeline.
     pub fn should_run(&self, domain: &str) -> Result<bool, StorageError> {
         // Condition 1: schedule interval exceeded.
         let checkpoint = self.checkpoint.load()?;
@@ -33,10 +33,6 @@ impl<D: LearningDomain> CompressionRunner<D> {
             .count_matching(self.config.lookback_days.get(), |s| {
                 D::signal_domain(s) == Some(domain)
             })?;
-        if count >= self.config.signal_count_threshold {
-            return Ok(true);
-        }
-
-        Ok(false)
+        Ok(count >= self.config.signal_count_threshold)
     }
 }
