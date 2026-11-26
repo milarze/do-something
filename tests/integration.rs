@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
     SessionUpdate, SetSessionModeRequest, TextContent,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo};
+use agent_client_protocol::{Agent, Client, v1::ConnectionTo};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[path = "common/mock_server.rs"]
@@ -91,7 +91,7 @@ async fn smoke_text_prompt_round_trip() {
     let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
-        .builder()
+        .v1()
         .on_receive_notification(
             async move |n: SessionNotification, _cx| {
                 record_notifications(notifs_handler.clone(), n.update);
@@ -178,7 +178,7 @@ async fn slash_command_help_short_circuits() {
     let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
-        .builder()
+        .v1()
         .on_receive_notification(
             async move |n: SessionNotification, _cx| {
                 record_notifications(notifs_handler.clone(), n.update);
@@ -270,7 +270,7 @@ model = "second-model"
     let transport = agent_client_protocol::ByteStreams::new(stdin.compat_write(), stdout.compat());
 
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = Client
-        .builder()
+        .v1()
         .on_receive_notification(
             async move |n: SessionNotification, _cx| {
                 record_notifications(notifs_handler.clone(), n.update);
@@ -298,7 +298,7 @@ model = "second-model"
             // Switch to "second".
             conn.send_request(SetSessionModeRequest::new(
                 new_sess.session_id.clone(),
-                agent_client_protocol::schema::v1::SessionModeId::new("second"),
+                agent_client_protocol::v1::schema::SessionModeId::new("second"),
             ))
             .block_task()
             .await?;

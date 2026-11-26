@@ -106,12 +106,12 @@ impl RecipeLearningDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::learning::Probability;
     use crate::domain::recipe::learning::aggregate::{
         ErrorFrequency, MethodStats, RecipeAggregatedStats,
     };
     use crate::domain::recipe::models::recipe::ParseMethod;
     use crate::domain::recipe::storage::RecipeKnowledgeStore;
+    use crate::framework::learning::Probability;
     use crate::framework::learning::stats::CompressionConfig;
     use chrono::Utc;
     use std::collections::HashMap;

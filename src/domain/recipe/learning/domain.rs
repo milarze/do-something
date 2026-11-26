@@ -59,10 +59,10 @@ impl LearningDomain for RecipeLearningDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::learning::Probability;
     use crate::domain::recipe::models::recipe::ParseMethod;
     use crate::domain::recipe::models::signal::{RecipeSignal, RecipeSignalType};
     use crate::domain::recipe::storage::{KnowledgeStorage, RecipeKnowledgeStore};
+    use crate::framework::learning::Probability;
     use crate::framework::learning::runner::CompressionRunner;
     use crate::framework::storage::{CheckpointStore, DailyLog};
     use tempfile::tempdir;

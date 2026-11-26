@@ -290,10 +290,7 @@ mod tests {
             extract_domain(&"https://www.allrecipes.com/recipe/123".parse().unwrap()),
             Some("www.allrecipes.com".to_string())
         );
-        assert_eq!(
-            extract_domain(&"file:///tmp/x".parse().unwrap()),
-            None
-        );
+        assert_eq!(extract_domain(&"file:///tmp/x".parse().unwrap()), None);
     }
 
     #[test]
@@ -344,10 +341,7 @@ mod tests {
         );
         let res = tool.execute(json!({})).await;
         assert!(res.is_error());
-        assert_eq!(
-            res.error_message(),
-            Some("missing or invalid `url`")
-        );
+        assert_eq!(res.error_message(), Some("missing or invalid `url`"));
     }
 
     #[tokio::test]
@@ -357,9 +351,7 @@ mod tests {
             Box::new(NoopRateLimiter),
             "test".to_string(),
         );
-        let res = tool
-            .execute(json!({"url": "file:///etc/passwd"}))
-            .await;
+        let res = tool.execute(json!({"url": "file:///etc/passwd"})).await;
         assert!(res.is_error());
         assert!(res.error_message().unwrap().contains("unsupported scheme"));
     }

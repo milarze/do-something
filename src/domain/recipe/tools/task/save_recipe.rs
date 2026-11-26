@@ -95,7 +95,10 @@ struct FakeRecipeDb {
 
 #[cfg(test)]
 impl RecipesStorage for FakeRecipeDb {
-    fn insert(&self, recipe: &Recipe) -> crate::framework::storage::Result<crate::domain::recipe::models::recipe::RecipeId> {
+    fn insert(
+        &self,
+        recipe: &Recipe,
+    ) -> crate::framework::storage::Result<crate::domain::recipe::models::recipe::RecipeId> {
         use crate::domain::recipe::models::recipe::RecipeId;
         let mut recipes = self.recipes.lock().unwrap();
         let id = RecipeId::generate();
@@ -119,7 +122,8 @@ impl RecipesStorage for FakeRecipeDb {
     fn search(
         &self,
         _query: &str,
-    ) -> crate::framework::storage::Result<Vec<crate::domain::recipe::models::recipe::RecipeId>> {
+    ) -> crate::framework::storage::Result<Vec<crate::domain::recipe::models::recipe::RecipeId>>
+    {
         Ok(Vec::new())
     }
     fn count(&self) -> crate::framework::storage::Result<u64> {
@@ -241,7 +245,8 @@ mod tests {
             fn insert(
                 &self,
                 _r: &Recipe,
-            ) -> crate::framework::storage::Result<crate::domain::recipe::models::recipe::RecipeId> {
+            ) -> crate::framework::storage::Result<crate::domain::recipe::models::recipe::RecipeId>
+            {
                 Ok(crate::domain::recipe::models::recipe::RecipeId::new("x"))
             }
             fn get(
@@ -251,12 +256,16 @@ mod tests {
                 Ok(None)
             }
             fn exists_by_url(&self, _url: &str) -> crate::framework::storage::Result<bool> {
-                Err(crate::framework::storage::StorageError::LockError("simulated".to_string()))
+                Err(crate::framework::storage::StorageError::LockError(
+                    "simulated".to_string(),
+                ))
             }
             fn search(
                 &self,
                 _q: &str,
-            ) -> crate::framework::storage::Result<Vec<crate::domain::recipe::models::recipe::RecipeId>> {
+            ) -> crate::framework::storage::Result<
+                Vec<crate::domain::recipe::models::recipe::RecipeId>,
+            > {
                 Ok(Vec::new())
             }
             fn count(&self) -> crate::framework::storage::Result<u64> {
@@ -271,7 +280,11 @@ mod tests {
             .execute(json!({"recipe": make_recipe_json("X", "https://example.com/x")}))
             .await;
         assert!(res.is_error());
-        assert!(res.error_message().unwrap().contains("duplicate check failed"));
+        assert!(
+            res.error_message()
+                .unwrap()
+                .contains("duplicate check failed")
+        );
     }
 
     // Ensure the Recipe deserialize shape used by tool args round-trips.

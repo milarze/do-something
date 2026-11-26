@@ -58,7 +58,8 @@ impl Tool for RecordSignalTool {
             return ToolResult::error("missing `signal_type`");
         };
 
-        let signal_type: RecipeSignalType = match serde_json::from_value(signal_type_value.clone()) {
+        let signal_type: RecipeSignalType = match serde_json::from_value(signal_type_value.clone())
+        {
             Ok(t) => t,
             Err(e) => return ToolResult::error(format!("invalid signal_type: {e}")),
         };
@@ -178,10 +179,7 @@ mod tests {
         let signals = log.signals.lock().unwrap();
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].domain.as_deref(), Some("example.com"));
-        assert_eq!(
-            signals[0].url.as_deref(),
-            Some("https://example.com/r")
-        );
+        assert_eq!(signals[0].url.as_deref(), Some("https://example.com/r"));
         assert_eq!(signals[0].recipe_id.as_deref(), Some("rc_1"));
         match &signals[0].signal_type {
             RecipeSignalType::ParseSuccess { method, time_ms } => {

@@ -253,9 +253,9 @@ fn config_diffs(old: &Value, new: &Value) -> Vec<(String, Option<String>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::recipe::models::patterns::RecipePatterns;
     use crate::domain::recipe::models::signal::RecipeSignalType;
     use crate::domain::recipe::models::user_model::UserModel;
-    use crate::domain::recipe::models::patterns::RecipePatterns;
     use chrono::NaiveDate;
     use serde_json::json;
     use std::collections::HashMap;
@@ -318,7 +318,10 @@ mod tests {
         fn get_patterns(&self) -> crate::framework::storage::Result<RecipePatterns> {
             Ok(self.patterns.lock().unwrap().clone())
         }
-        fn save_patterns(&self, patterns: &RecipePatterns) -> crate::framework::storage::Result<()> {
+        fn save_patterns(
+            &self,
+            patterns: &RecipePatterns,
+        ) -> crate::framework::storage::Result<()> {
             *self.patterns.lock().unwrap() = patterns.clone();
             Ok(())
         }
@@ -351,7 +354,10 @@ mod tests {
         fn prune(&self, _older_than_days: u32) -> crate::framework::storage::Result<u64> {
             Ok(0)
         }
-        fn read_date(&self, _date: NaiveDate) -> crate::framework::storage::Result<Vec<RecipeSignal>> {
+        fn read_date(
+            &self,
+            _date: NaiveDate,
+        ) -> crate::framework::storage::Result<Vec<RecipeSignal>> {
             Ok(Vec::new())
         }
         fn available_dates(&self) -> crate::framework::storage::Result<Vec<NaiveDate>> {
@@ -422,7 +428,9 @@ mod tests {
     async fn config_must_be_object() {
         let (k, s, b) = deps();
         let tool = make_tool(k, s, b);
-        let res = tool.execute(json!({"domain": "example.com", "config": "oops"})).await;
+        let res = tool
+            .execute(json!({"domain": "example.com", "config": "oops"}))
+            .await;
         assert!(res.is_error());
         assert_eq!(res.error_message(), Some("`config` must be an object"));
     }
@@ -472,10 +480,7 @@ mod tests {
 
         let saved = k.get_site_config("example.com").unwrap().unwrap();
         assert_eq!(saved.rate_limit_ms, 2000); // preserved
-        assert_eq!(
-            saved.selectors.title.as_deref(),
-            Some(".recipe-title")
-        ); // merged in
+        assert_eq!(saved.selectors.title.as_deref(), Some(".recipe-title")); // merged in
         assert_eq!(saved.version, 1); // bumped
     }
 
@@ -594,7 +599,8 @@ mod tests {
         let existing = SiteConfig::new("example.com");
         k.save_site_config(&existing).unwrap();
         let tool = make_tool(k, s.clone(), b);
-        tool.execute(json!({"domain": "example.com", "config": {}})).await;
+        tool.execute(json!({"domain": "example.com", "config": {}}))
+            .await;
         assert!(s.signals.lock().unwrap().is_empty());
     }
 
@@ -629,10 +635,7 @@ mod tests {
             ) -> crate::framework::storage::Result<Option<SiteConfig>> {
                 Err(StorageError::LockError("load boom".to_string()))
             }
-            fn save_site_config(
-                &self,
-                _c: &SiteConfig,
-            ) -> crate::framework::storage::Result<()> {
+            fn save_site_config(&self, _c: &SiteConfig) -> crate::framework::storage::Result<()> {
                 Ok(())
             }
             fn list_site_configs(&self) -> crate::framework::storage::Result<Vec<String>> {
@@ -656,10 +659,7 @@ mod tests {
             fn get_patterns(&self) -> crate::framework::storage::Result<RecipePatterns> {
                 Ok(RecipePatterns::default())
             }
-            fn save_patterns(
-                &self,
-                _p: &RecipePatterns,
-            ) -> crate::framework::storage::Result<()> {
+            fn save_patterns(&self, _p: &RecipePatterns) -> crate::framework::storage::Result<()> {
                 Ok(())
             }
         }
