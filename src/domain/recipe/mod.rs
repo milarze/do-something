@@ -18,8 +18,8 @@ pub use learning::{RecipeAggregatedStats, RecipeLearningDomain, RecipePattern};
 pub use models::*;
 pub use paths::RecipePaths;
 pub use storage::*;
-pub use tools::task::{FetchHtmlTool, ParseRecipeTool, RateLimiter, SaveRecipeTool, SearchTool};
 pub use tools::learning::{
     CompressSignalsTool, CompressionRunnerPort, ConfigBackupStore, FileConfigBackupStore,
     GetKnowledgeTool, RecordSignalTool, UpdateConfigTool,
 };
+pub use tools::task::{FetchHtmlTool, ParseRecipeTool, RateLimiter, SaveRecipeTool, SearchTool};

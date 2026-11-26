@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
     ClientCapabilities, Content, ContentBlock, ContentChunk, CurrentModeUpdate,
     EmbeddedResourceResource, Implementation, InitializeRequest, InitializeResponse,
@@ -15,7 +15,7 @@ use agent_client_protocol::schema::v1::{
     SetSessionModeResponse, StopReason, TextContent, ToolCall as AcpToolCall, ToolCallContent,
     ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
-use agent_client_protocol::{Client, ConnectionTo};
+use agent_client_protocol::{Client, v1::ConnectionTo};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 

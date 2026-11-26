@@ -3,10 +3,10 @@ mod config;
 mod llm;
 mod tools;
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CancelNotification, InitializeRequest, NewSessionRequest, PromptRequest, SetSessionModeRequest,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo, Dispatch, Result};
+use agent_client_protocol::{Agent, Client, Error, Result, v1::ConnectionTo, v1::Dispatch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::agent::{
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     let s_set_mode = state.clone();
 
     Agent
-        .builder()
+        .v1()
         .name("do-something")
         .on_receive_request(
             async move |req: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
@@ -101,12 +101,14 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_dispatch(
-            async move |message: Dispatch, cx: ConnectionTo<Client>| {
+            async move |message: Dispatch, _cx: ConnectionTo<Client>| {
                 tracing::debug!("unhandled message");
-                message.respond_with_error(
-                    agent_client_protocol::util::internal_error("method not implemented"),
-                    cx,
-                )
+                match message {
+                    Dispatch::Request(_req, responder) => responder
+                        .respond_with_error(Error::internal_error().data("method not implemented")),
+                    Dispatch::Notification(_notif) => Ok(()),
+                    Dispatch::Response(_result, _router) => Ok(()),
+                }
             },
             agent_client_protocol::on_receive_dispatch!(),
         )

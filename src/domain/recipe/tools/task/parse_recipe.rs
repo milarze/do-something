@@ -13,8 +13,8 @@ use crate::domain::recipe::models::recipe::{
     Difficulty, Ingredient, ParseMethod, Recipe, RecipeId, Servings,
 };
 use crate::domain::recipe::models::site_config::{Selectors, SiteConfig};
-use crate::domain::recipe::storage::traits::KnowledgeStorage;
 use crate::domain::recipe::storage::RecipeKnowledgeStore;
+use crate::domain::recipe::storage::traits::KnowledgeStorage;
 use crate::framework::tools::traits::{Tool, ToolResult};
 
 use super::fetch_html::extract_domain;
@@ -158,10 +158,7 @@ fn method_str(m: &ParseMethod) -> &'static str {
 fn recipe_json(recipe: &Recipe, method: &ParseMethod) -> Value {
     let mut value = serde_json::to_value(recipe).unwrap_or(Value::Null);
     if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "parse_method".to_string(),
-            json!(method_str(method)),
-        );
+        obj.insert("parse_method".to_string(), json!(method_str(method)));
     }
     value
 }
@@ -172,8 +169,7 @@ fn recipe_json(recipe: &Recipe, method: &ParseMethod) -> Value {
 /// contains `Recipe`.
 pub fn parse_schema_org(html: &str, url: &str) -> Option<Recipe> {
     let document = scraper::Html::parse_document(html);
-    let selector =
-        scraper::Selector::parse(r#"script[type="application/ld+json"]"#).ok()?;
+    let selector = scraper::Selector::parse(r#"script[type="application/ld+json"]"#).ok()?;
 
     for element in document.select(&selector) {
         let raw = element.text().collect::<String>();
@@ -272,9 +268,7 @@ fn build_recipe_from_schema(value: &Value, url: &str, method: ParseMethod) -> Op
                     .and_then(Value::as_u64)
                     .map(|m| m as u32)
             }),
-        servings: value
-            .get("recipeYield")
-            .and_then(extract_servings),
+        servings: value.get("recipeYield").and_then(extract_servings),
         cuisine: value
             .get("recipeCuisine")
             .and_then(Value::as_str)
@@ -298,11 +292,7 @@ fn build_recipe_from_schema(value: &Value, url: &str, method: ParseMethod) -> Op
             .and_then(|s| url::Url::parse(&s).ok()),
         author: value
             .get("author")
-            .and_then(|v| {
-                v.get("name")
-                    .and_then(Value::as_str)
-                    .or_else(|| v.as_str())
-            })
+            .and_then(|v| v.get("name").and_then(Value::as_str).or_else(|| v.as_str()))
             .map(String::from),
         description: value
             .get("description")
@@ -345,7 +335,10 @@ fn extract_instructions(value: &Value) -> Vec<String> {
             .collect(),
         Value::String(s) => {
             // Single text block: split on newlines for steps.
-            s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+            s.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
         }
         _ => Vec::new(),
     }
@@ -425,14 +418,20 @@ fn parse_iso_duration_minutes(s: &str) -> Option<u32> {
 }
 
 /// Build a NutritionInfo from a Schema.org nutrition object.
-fn build_nutrition(obj: &serde_json::Map<String, Value>) -> Option<crate::domain::recipe::models::recipe::NutritionInfo> {
+fn build_nutrition(
+    obj: &serde_json::Map<String, Value>,
+) -> Option<crate::domain::recipe::models::recipe::NutritionInfo> {
     use crate::domain::recipe::models::recipe::NutritionInfo;
     let calories = obj
         .get("calories")
         .and_then(|v| v.as_str())
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse::<u32>().ok())
-        .or_else(|| obj.get("calories").and_then(Value::as_u64).map(|c| c as u32));
+        .or_else(|| {
+            obj.get("calories")
+                .and_then(Value::as_u64)
+                .map(|c| c as u32)
+        });
     if calories.is_none()
         && obj.get("fatContent").is_none()
         && obj.get("proteinContent").is_none()
@@ -464,8 +463,7 @@ fn num_as_f64(v: &Value) -> Option<f64> {
 pub fn parse_microdata(html: &str, url: &str) -> Option<Recipe> {
     let document = scraper::Html::parse_document(html);
     // Find a container scoped to a Recipe schema.
-    let scope_selector =
-        scraper::Selector::parse(r#"[itemtype*="Recipe"]"#).ok()?;
+    let scope_selector = scraper::Selector::parse(r#"[itemtype*="Recipe"]"#).ok()?;
     let scope = document.select(&scope_selector).next()?;
 
     let source_url: url::Url = url::Url::parse(url).ok()?;
@@ -685,10 +683,7 @@ mod tests {
         assert_eq!(recipe.difficulty, Some(Difficulty::Easy));
         assert!(recipe.tags.contains(&"chocolate".to_string()));
         assert_eq!(recipe.author.as_deref(), Some("Jane Doe"));
-        assert_eq!(
-            recipe_method(&recipe),
-            ParseMethod::SchemaOrg
-        );
+        assert_eq!(recipe_method(&recipe), ParseMethod::SchemaOrg);
     }
 
     #[test]
@@ -756,8 +751,7 @@ mod tests {
             instructions: Some(".step".to_string()),
             ..Default::default()
         };
-        let recipe =
-            parse_selectors(html, "https://example.com/soup", &selectors).unwrap();
+        let recipe = parse_selectors(html, "https://example.com/soup", &selectors).unwrap();
         assert_eq!(recipe.name, "Soup");
         assert_eq!(recipe.ingredients.len(), 2);
         assert_eq!(recipe.instructions.len(), 2);
@@ -795,10 +789,7 @@ mod tests {
 
     #[test]
     fn servings_text_parsing() {
-        assert_eq!(
-            parse_servings_text("4 servings").map(|s| s.min),
-            Some(4)
-        );
+        assert_eq!(parse_servings_text("4 servings").map(|s| s.min), Some(4));
         assert_eq!(
             parse_servings_text("4-6 servings").map(|s| (s.min, s.max)),
             Some((4, Some(6)))

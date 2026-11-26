@@ -4,12 +4,12 @@
 //! Tools are advertised to the LLM only when the corresponding client
 //! capability was negotiated during `initialize`.
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     ClientCapabilities, CreateTerminalRequest, KillTerminalRequest, ReadTextFileRequest,
     ReleaseTerminalRequest, SessionId, TerminalOutputRequest, WaitForTerminalExitRequest,
     WriteTextFileRequest,
 };
-use agent_client_protocol::{Client, ConnectionTo};
+use agent_client_protocol::{Client, v1::ConnectionTo};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;

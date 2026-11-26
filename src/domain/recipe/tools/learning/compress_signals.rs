@@ -70,7 +70,10 @@ impl Tool for CompressSignalsTool {
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
-        let domain = args.get("domain").and_then(Value::as_str).map(str::to_string);
+        let domain = args
+            .get("domain")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let days = args.get("days").and_then(Value::as_u64).unwrap_or(7) as u32;
 
         match self.runner.run(domain.as_deref(), days) {

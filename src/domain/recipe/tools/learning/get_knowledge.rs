@@ -24,10 +24,7 @@ impl GetKnowledgeTool {
     }
 
     /// Load site config JSON values for `domain` (or all domains if `None`).
-    fn load_configs(
-        &self,
-        domain: Option<&str>,
-    ) -> crate::framework::storage::Result<Vec<Value>> {
+    fn load_configs(&self, domain: Option<&str>) -> crate::framework::storage::Result<Vec<Value>> {
         match domain {
             Some(d) => {
                 let mut out = Vec::new();
@@ -78,8 +75,14 @@ impl Tool for GetKnowledgeTool {
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
-        let domain = args.get("domain").and_then(Value::as_str).map(str::to_string);
-        let include_patterns = args.get("include_patterns").and_then(Value::as_bool).unwrap_or(true);
+        let domain = args
+            .get("domain")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let include_patterns = args
+            .get("include_patterns")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         let configs = match self.load_configs(domain.as_deref()) {
             Ok(v) => v,
@@ -137,10 +140,7 @@ mod tests {
         ) -> crate::framework::storage::Result<Option<SiteConfig>> {
             Ok(self.configs.lock().unwrap().get(domain).cloned())
         }
-        fn save_site_config(
-            &self,
-            config: &SiteConfig,
-        ) -> crate::framework::storage::Result<()> {
+        fn save_site_config(&self, config: &SiteConfig) -> crate::framework::storage::Result<()> {
             self.configs
                 .lock()
                 .unwrap()
@@ -196,10 +196,7 @@ mod tests {
         ) -> crate::framework::storage::Result<Option<SiteConfig>> {
             Err(StorageError::LockError("simulated".to_string()))
         }
-        fn save_site_config(
-            &self,
-            _config: &SiteConfig,
-        ) -> crate::framework::storage::Result<()> {
+        fn save_site_config(&self, _config: &SiteConfig) -> crate::framework::storage::Result<()> {
             Ok(())
         }
         fn list_site_configs(&self) -> crate::framework::storage::Result<Vec<String>> {

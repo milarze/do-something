@@ -290,7 +290,10 @@ mod tests {
 
     #[test]
     fn filter_ignores_invalid_urls() {
-        let urls = vec!["not a url".to_string(), "https://allrecipes.com/x".to_string()];
+        let urls = vec![
+            "not a url".to_string(),
+            "https://allrecipes.com/x".to_string(),
+        ];
         let filtered = filter_recipe_urls(&urls);
         assert_eq!(filtered.len(), 1);
     }
