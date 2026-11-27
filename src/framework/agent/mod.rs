@@ -6,7 +6,5 @@
 //! generic over domains and contains no recipe symbols.
 
 pub mod context;
-pub mod token;
 
 pub use context::{ContextManager, HistoryEntry};
-pub use token::{CharTokenCounter, TokenCounter};

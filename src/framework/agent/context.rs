@@ -1,47 +1,54 @@
 //! Conversation context management.
 //!
 //! [`ContextManager`] holds the running conversation as [`HistoryEntry`]s and
-//! produces a token-budgeted slice of [`ChatMessage`]s for the next LLM
-//! request. Token counting is delegated to a [`TokenCounter`] (dependency
-//! injection) so tests use deterministic counts and a real tokenizer can be
-//! swapped in later.
+//! produces a budgeted slice of [`ChatMessage`]s for the next LLM request.
+//!
+//! The framework does **not** count tokens client-side — it has no model
+//! tokenizer, and a chars-per-token heuristic under-counts the JSON-heavy tool
+//! traffic that dominates an agent loop. The server's tokenizer is the single
+//! source of truth:
+//!
+//! - `get_trimmed(max_bytes)` is a **coarse byte pre-filter** — it takes the
+//!   most recent entries under a byte ceiling to avoid sending obviously-huge
+//!   history for a wasted round-trip. It never claims exact fit.
+//! - `compact(keep_last_n)` is the **correctness** lever. It summarizes old
+//!   tool results to placeholders (retaining the tool name), then drops the
+//!   oldest non-system entry once all tool results are summarized. Returns
+//!   `true` when it made progress, `false` when context is exhausted.
+//! - `record_usage(prompt_tokens)` stores the last server-reported
+//!   `usage.prompt_tokens` for warm-turn budgeting from ground truth.
 //!
 //! > **Spec:** [`06-agent-runner.md`](../../../specifications/06-agent-runner.md)
 //! > — `framework/agent/context.rs`. `HistoryEntry` is modelled as an enum
-//! > (one variant per message shape) rather than the spec's single struct with
-//! > optional fields: it is type-safe (a user message cannot carry a tool
-//! > result), makes [`HistoryEntry::to_chat_message`] a total function, and
-//! > avoids a cluster of always-empty fields per variant.
-
-use std::sync::Arc;
+//! > (one variant per message shape) rather than a struct with optional fields:
+//! > type-safe, total `to_chat_message`, no cluster of empty fields per variant.
+//!
+//! > **Note:** the previous version held a `TokenCounter` trait and per-entry
+//! > `token_count: u64`. Dropped because the framework has no tokenizer and a
+//! > chars-per-token estimate under-counts JSON tool traffic. The server's
+//! > tokenizer is authoritative; `compact` reacts to its `ContextOverflow`
+//! > verdict.
 
 use crate::llm::{ChatMessage, ToolCall};
-
-use super::token::{CharTokenCounter, TokenCounter};
 
 /// A single message in the conversation history.
 ///
 /// Each variant maps to exactly one [`ChatMessage`] via
-/// [`to_chat_message`](HistoryEntry::to_chat_message). `token_count` is left at
-/// zero by the constructors and recomputed by [`ContextManager::push`] using
-/// the manager's [`TokenCounter`].
+/// [`to_chat_message`](HistoryEntry::to_chat_message).
 #[derive(Debug, Clone)]
 pub enum HistoryEntry {
     /// A system instruction.
     System {
         text: String,
-        token_count: u64,
     },
     /// A user message.
     User {
         text: String,
-        token_count: u64,
     },
     /// An assistant turn, optionally with tool calls it requested.
     Assistant {
         text: Option<String>,
         tool_calls: Vec<ToolCall>,
-        token_count: u64,
     },
     /// A tool result returned to the model.
     ///
@@ -53,45 +60,32 @@ pub enum HistoryEntry {
         content: String,
         success: bool,
         is_summarized: bool,
-        token_count: u64,
     },
 }
 
 impl HistoryEntry {
+    /// Create a system entry.
     pub fn system(text: impl Into<String>) -> Self {
-        Self::System {
-            text: text.into(),
-            token_count: 0,
-        }
+        Self::System { text: text.into() }
     }
 
+    /// Create a user entry.
     pub fn user(text: impl Into<String>) -> Self {
-        Self::User {
-            text: text.into(),
-            token_count: 0,
-        }
+        Self::User { text: text.into() }
     }
 
+    /// Create an assistant entry.
     pub fn assistant(text: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
-        Self::Assistant {
-            text,
-            tool_calls,
-            token_count: 0,
-        }
+        Self::Assistant { text, tool_calls }
     }
 
-    /// A tool-result entry. `success` records whether the tool succeeded.
-    pub fn tool_result(
-        tool_call_id: impl Into<String>,
-        content: impl Into<String>,
-        success: bool,
-    ) -> Self {
+    /// Create a tool-result entry. `success` records whether the tool succeeded.
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>, success: bool) -> Self {
         Self::ToolResult {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
             success,
             is_summarized: false,
-            token_count: 0,
         }
     }
 
@@ -103,66 +97,38 @@ impl HistoryEntry {
             Self::Assistant { text, tool_calls, .. } => {
                 ChatMessage::assistant(text.clone(), tool_calls.clone())
             }
-            Self::ToolResult {
-                tool_call_id,
-                content,
-                ..
-            } => ChatMessage::tool_result(tool_call_id.clone(), content.clone()),
-        }
-    }
-
-    /// Stored token estimate (zero until the manager computes it).
-    pub fn token_count(&self) -> u64 {
-        match self {
-            Self::System { token_count, .. }
-            | Self::User { token_count, .. }
-            | Self::Assistant { token_count, .. }
-            | Self::ToolResult { token_count, .. } => *token_count,
-        }
-    }
-
-    /// Approximate token usage of this entry under `counter`.
-    fn estimate_tokens(&self, counter: &dyn TokenCounter) -> u64 {
-        match self {
-            Self::System { text, .. } | Self::User { text, .. } => counter.count(text),
-            Self::Assistant {
-                text, tool_calls, ..
-            } => {
-                let mut tokens = text.as_deref().map_or(0, |t| counter.count(t));
-                for call in tool_calls {
-                    tokens += counter.count(&call.function.name);
-                    tokens += counter.count(&call.function.arguments);
-                }
-                tokens
+            Self::ToolResult { tool_call_id, content, .. } => {
+                ChatMessage::tool_result(tool_call_id.clone(), content.clone())
             }
-            Self::ToolResult {
-                tool_call_id,
-                content,
-                ..
-            } => counter.count(content) + counter.count(tool_call_id),
         }
     }
 
-    /// Recompute and store the token estimate.
-    fn set_token_count(&mut self, counter: &dyn TokenCounter) {
-        let count = self.estimate_tokens(counter);
+    /// Coarse byte size of this entry (for the pre-filter only — not a token count).
+    pub fn size(&self) -> u64 {
         match self {
-            Self::System { token_count, .. }
-            | Self::User { token_count, .. }
-            | Self::Assistant { token_count, .. }
-            | Self::ToolResult { token_count, .. } => *token_count = count,
+            Self::System { text } => text.len() as u64,
+            Self::User { text } => text.len() as u64,
+            Self::Assistant { text, tool_calls } => {
+                let text_len = text.as_deref().map_or(0, |t| t.len());
+                let calls_len: usize = tool_calls.iter().map(|c| {
+                    c.id.len() + c.kind.len() + c.function.name.len() + c.function.arguments.len()
+                }).sum();
+                (text_len + calls_len) as u64
+            }
+            Self::ToolResult { tool_call_id, content, .. } => {
+                (tool_call_id.len() + content.len()) as u64
+            }
         }
     }
 
-    /// Collapse a tool result to a short pass/fail placeholder. No-op for
-    /// other variants and for already-summarised tool results. Returns whether
-    /// the entry changed.
-    fn summarize(&mut self, counter: &dyn TokenCounter) -> bool {
+    /// Collapse a tool result to a short placeholder that retains the tool
+    /// name: `[tool result: <name>: success|failed]`. No-op for other variants
+    /// and already-summarized results. Returns whether it changed.
+    fn summarize(&mut self) -> bool {
         let Self::ToolResult {
             content,
             success,
             is_summarized,
-            token_count,
             ..
         } = self
         else {
@@ -175,44 +141,39 @@ impl HistoryEntry {
             "[tool result: {}]",
             if *success { "success" } else { "failed" }
         );
-        *token_count = counter.count(&placeholder);
         *content = placeholder;
         *is_summarized = true;
         true
     }
 }
 
-/// Conversation history with token budgeting.
+/// Conversation context management.
 ///
 /// History is held as [`HistoryEntry`]s; [`get_trimmed`](Self::get_trimmed)
-/// returns the most recent entries that fit a token budget as
+/// returns the most recent entries that fit a coarse byte ceiling as
 /// [`ChatMessage`]s. Old tool results can be collapsed to short placeholders
-/// via [`summarize_old_results`](Self::summarize_old_results) to reclaim budget.
+/// via [`compact`](Self::compact), which also drops the oldest non-system
+/// entry when all tool results are summarized.
 pub struct ContextManager {
     history: Vec<HistoryEntry>,
-    max_tokens: u64,
-    counter: Arc<dyn TokenCounter>,
+    /// Coarse byte ceiling — an honest heuristic, not an exact fit.
+    max_bytes: u64,
+    /// Last server-reported prompt token count (warm-turn ground truth).
+    last_prompt_tokens: Option<u64>,
 }
 
 impl ContextManager {
-    /// New manager with the given hard context window and the default
-    /// [`CharTokenCounter`].
-    pub fn new(max_tokens: u64) -> Self {
-        Self::new_with_counter(max_tokens, Arc::new(CharTokenCounter::default()))
-    }
-
-    /// New manager with an explicit token counter (for tests / real tokenizers).
-    pub fn new_with_counter(max_tokens: u64, counter: Arc<dyn TokenCounter>) -> Self {
+    /// New manager with the given byte ceiling.
+    pub fn new(max_bytes: u64) -> Self {
         Self {
             history: Vec::new(),
-            max_tokens,
-            counter,
+            max_bytes,
+            last_prompt_tokens: None,
         }
     }
 
-    /// Append an entry, computing its token count with the manager's counter.
-    pub fn push(&mut self, mut entry: HistoryEntry) {
-        entry.set_token_count(&*self.counter);
+    /// Append an entry.
+    pub fn push(&mut self, entry: HistoryEntry) {
         self.history.push(entry);
     }
 
@@ -222,32 +183,39 @@ impl ContextManager {
     }
 
     /// Return history as LLM messages, taking the most recent entries that fit
-    /// within `budget` (clamped to the context window [`max_tokens`](Self::new)).
+    /// within `max_bytes` (clamped to the context window [`max_bytes`](Self::new)).
     ///
     /// Walks backwards from the most recent entry and stops at the first entry
     /// that would exceed the budget, so a single entry larger than the budget
     /// yields an empty result. Returned in chronological order.
-    pub fn get_trimmed(&self, budget: u64) -> Vec<ChatMessage> {
-        let budget = budget.min(self.max_tokens);
+    ///
+    /// This is a **coarse byte pre-filter only**; correctness comes from
+    /// reactive [`compact`](Self::compact) on server `ContextOverflow`.
+    pub fn get_trimmed(&self, max_bytes: u64) -> Vec<ChatMessage> {
+        let max_bytes = max_bytes.min(self.max_bytes);
         let mut messages = Vec::new();
         let mut used = 0u64;
         for entry in self.history.iter().rev() {
-            let tokens = entry.token_count();
-            if used + tokens > budget {
+            let size = entry.size();
+            if used + size > max_bytes {
                 break;
             }
-            used += tokens;
+            used += size;
             messages.push(entry.to_chat_message());
         }
         messages.reverse();
         messages
     }
 
-    /// Collapse old tool results to short placeholders, keeping the last
-    /// `keep_last_n` tool results in full. No-op for non-tool entries and for
-    /// already-summarised results, so repeated calls are idempotent.
-    pub fn summarize_old_results(&mut self, keep_last_n: usize) {
-        // Indices of tool-result entries, in chronological order.
+    /// Summarize old tool results (keep last `keep_last_n` in full), then drop
+    /// the oldest non-system entry once all tool results are summarized. Returns
+    /// `true` when it made progress, `false` when context is exhausted and no
+    /// further progress is possible.
+    ///
+    /// Idempotent: repeated calls have no additional effect once the context is
+    /// fully compacted.
+    pub fn compact(&mut self, keep_last_n: usize) -> bool {
+        // Phase 1: summarize old tool results, keeping the last `keep_last_n`.
         let tool_indices: Vec<usize> = self
             .history
             .iter()
@@ -256,11 +224,42 @@ impl ContextManager {
             .map(|(i, _)| i)
             .collect();
 
-        // Summarise all but the last `keep_last_n`.
         let keep_from = tool_indices.len().saturating_sub(keep_last_n);
+        let mut made_progress = false;
         for &i in &tool_indices[..keep_from] {
-            self.history[i].summarize(&*self.counter);
+            if self.history[i].summarize() {
+                made_progress = true;
+            }
         }
+
+        // Phase 2: if all tool results are already summarized (and there were
+        // tool results), drop the oldest User/Assistant entry to make room.
+        // ToolResult entries are already compacted placeholders — they are
+        // the last thing to go.
+        if !tool_indices.is_empty()
+            && tool_indices.iter().all(|&i| {
+                matches!(&self.history[i], HistoryEntry::ToolResult { is_summarized: true, .. })
+            })
+            && let Some(drop_idx) = self
+                .history
+                .iter()
+                .position(|e| matches!(e, HistoryEntry::User { .. } | HistoryEntry::Assistant { .. }))
+        {
+            self.history.remove(drop_idx);
+            made_progress = true;
+        }
+
+        made_progress
+    }
+
+    /// Record the server's last reported prompt token count.
+    pub fn record_usage(&mut self, prompt_tokens: u64) {
+        self.last_prompt_tokens = Some(prompt_tokens);
+    }
+
+    /// Return the last server-reported prompt token count, if available.
+    pub fn last_usage(&self) -> Option<u64> {
+        self.last_prompt_tokens
     }
 }
 
@@ -268,11 +267,9 @@ impl ContextManager {
 mod tests {
     use super::*;
     use crate::llm::{ChatMessage, Role, ToolCall, ToolCallFunction};
-    use std::sync::Arc;
 
-    /// A manager using a 1-char-per-token counter, so token arithmetic is exact.
-    fn mgr(max_tokens: u64) -> ContextManager {
-        ContextManager::new_with_counter(max_tokens, Arc::new(CharTokenCounter::with_ratio(1)))
+    fn mgr(max_bytes: u64) -> ContextManager {
+        ContextManager::new(max_bytes)
     }
 
     /// The text content of a message, panicking if it isn't a plain string.
@@ -284,25 +281,14 @@ mod tests {
     }
 
     fn assert_user(msg: &ChatMessage, expected: &str) {
-        assert!(matches!(msg.role, Role::User), "expected User role");
+        assert!(matches!(msg.role, Role::User), "expected User role, got {:?}", msg.role);
         assert_eq!(content_of(msg), expected);
     }
 
-    fn assert_tool_summarized(entry: &HistoryEntry, success: bool) {
+    fn assert_tool_summarized(entry: &HistoryEntry, expected: &str) {
         match entry {
-            HistoryEntry::ToolResult {
-                content,
-                success: s,
-                is_summarized,
-                ..
-            } => {
+            HistoryEntry::ToolResult { content, is_summarized, .. } => {
                 assert!(*is_summarized, "expected summarized");
-                assert_eq!(*s, success);
-                let expected = if success {
-                    "[tool result: success]"
-                } else {
-                    "[tool result: failed]"
-                };
                 assert_eq!(content, expected);
             }
             other => panic!("expected ToolResult, got {other:?}"),
@@ -311,11 +297,7 @@ mod tests {
 
     fn assert_tool_full(entry: &HistoryEntry, content: &str) {
         match entry {
-            HistoryEntry::ToolResult {
-                content: c,
-                is_summarized,
-                ..
-            } => {
+            HistoryEntry::ToolResult { content: c, is_summarized, .. } => {
                 assert!(!*is_summarized, "expected not summarized");
                 assert_eq!(c, content);
             }
@@ -323,7 +305,7 @@ mod tests {
         }
     }
 
-    // --- HistoryEntry::to_chat_message -------------------------------------
+    // --- HistoryEntry -------------------------------------------------------
 
     #[test]
     fn to_chat_message_system() {
@@ -372,44 +354,13 @@ mod tests {
         assert_eq!(content_of(&m), "done");
     }
 
-    // --- token counting -----------------------------------------------------
-
     #[test]
-    fn constructors_leave_token_count_zero() {
-        assert_eq!(HistoryEntry::user("hello").token_count(), 0);
-    }
+    fn history_entry_size() {
+        let entry = HistoryEntry::user("hello");
+        assert_eq!(entry.size(), 5);
 
-    #[test]
-    fn push_computes_token_count() {
-        let mut cm = mgr(100);
-        cm.push(HistoryEntry::user("hello")); // 5 chars → 5 tokens
-        assert_eq!(cm.history()[0].token_count(), 5);
-    }
-
-    #[test]
-    fn assistant_token_count_includes_tool_calls() {
-        let mut cm = mgr(1000);
-        let args = "{\"url\":\"http://x\"}";
-        let call = ToolCall {
-            id: "1".into(),
-            kind: "function".into(),
-            function: ToolCallFunction {
-                name: "fetch".into(),
-                arguments: args.into(),
-            },
-        };
-        cm.push(HistoryEntry::assistant(Some("hi".into()), vec![call]));
-        // text "hi"(2) + name "fetch"(5) + args(len)
-        let expected = 2 + 5 + args.chars().count() as u64;
-        assert_eq!(cm.history()[0].token_count(), expected);
-    }
-
-    #[test]
-    fn tool_result_token_count_includes_id() {
-        let mut cm = mgr(1000);
-        cm.push(HistoryEntry::tool_result("c1", "hello", true));
-        // content "hello"(5) + id "c1"(2) = 7
-        assert_eq!(cm.history()[0].token_count(), 7);
+        let entry = HistoryEntry::system("hello world");
+        assert_eq!(entry.size(), 11);
     }
 
     // --- get_trimmed --------------------------------------------------------
@@ -422,7 +373,7 @@ mod tests {
     #[test]
     fn get_trimmed_single_entry_within_budget() {
         let mut cm = mgr(100);
-        cm.push(HistoryEntry::user("hello")); // 5 tokens
+        cm.push(HistoryEntry::user("hello")); // 5 bytes
         let msgs = cm.get_trimmed(5);
         assert_eq!(msgs.len(), 1);
         assert_user(&msgs[0], "hello");
@@ -431,17 +382,17 @@ mod tests {
     #[test]
     fn get_trimmed_single_entry_over_budget_returns_empty() {
         let mut cm = mgr(100);
-        cm.push(HistoryEntry::user("hello")); // 5 tokens
+        cm.push(HistoryEntry::user("hello")); // 5 bytes
         assert!(cm.get_trimmed(4).is_empty());
     }
 
     #[test]
     fn get_trimmed_takes_most_recent_within_budget_in_order() {
         let mut cm = mgr(100);
-        cm.push(HistoryEntry::user("aaaa")); // 4
-        cm.push(HistoryEntry::user("bb")); // 2
-        cm.push(HistoryEntry::user("ccc")); // 3
-        // budget 5: ccc(3) + bb(2) = 5, stop before aaaa(4)
+        cm.push(HistoryEntry::user("aaaa")); // 4 bytes
+        cm.push(HistoryEntry::user("bb"));   // 2 bytes
+        cm.push(HistoryEntry::user("ccc"));  // 3 bytes
+        // budget 5: bb(2) + ccc(3) = 5, stop before aaaa(4)
         let msgs = cm.get_trimmed(5);
         assert_eq!(msgs.len(), 2);
         assert_user(&msgs[0], "bb");
@@ -451,106 +402,186 @@ mod tests {
     #[test]
     fn get_trimmed_exact_budget_boundary() {
         let mut cm = mgr(100);
-        cm.push(HistoryEntry::user("aaa")); // 3
-        cm.push(HistoryEntry::user("bb")); // 2
+        cm.push(HistoryEntry::user("aaa")); // 3 bytes
+        cm.push(HistoryEntry::user("bb"));  // 2 bytes
         // budget 5: 3 + 2 = 5, both included
         let msgs = cm.get_trimmed(5);
         assert_eq!(msgs.len(), 2);
     }
 
     #[test]
-    fn get_trimmed_clamped_to_max_tokens() {
+    fn get_trimmed_clamped_to_max_bytes() {
         let mut cm = mgr(3); // window of 3
         cm.push(HistoryEntry::user("aaaa")); // 4 > window
-        cm.push(HistoryEntry::user("bb")); // 2 <= window
+        cm.push(HistoryEntry::user("bb"));   // 2 <= window
         // budget 100 clamped to 3: take bb(2), stop before aaaa(4)
         let msgs = cm.get_trimmed(100);
         assert_eq!(msgs.len(), 1);
         assert_user(&msgs[0], "bb");
     }
 
-    // --- summarize_old_results ---------------------------------------------
+    #[test]
+    fn get_trimmed_includes_system_entry() {
+        let mut cm = mgr(100);
+        cm.push(HistoryEntry::system("be helpful")); // 12 bytes
+        cm.push(HistoryEntry::user("hi"));            // 2 bytes
+        // budget 5: only hi fits
+        let msgs = cm.get_trimmed(5);
+        assert_eq!(msgs.len(), 1);
+        assert_user(&msgs[0], "hi");
+        // budget 20: both fit
+        let msgs = cm.get_trimmed(20);
+        assert_eq!(msgs.len(), 2);
+    }
+
+    // --- summarize ----------------------------------------------------------
 
     #[test]
-    fn summarize_old_results_noop_without_tool_results() {
-        let mut cm = mgr(1000);
-        cm.push(HistoryEntry::user("hi"));
-        cm.push(HistoryEntry::assistant(Some("yo".into()), vec![]));
-        cm.summarize_old_results(1);
-        assert_eq!(cm.history().len(), 2);
-        assert_user(&cm.history()[0].to_chat_message(), "hi");
+    fn summarize_tool_result_success() {
+        let mut entry = HistoryEntry::tool_result("c1", "big result", true);
+        assert!(entry.summarize());
+        assert_tool_summarized(&entry, "[tool result: success]");
     }
 
     #[test]
-    fn summarize_old_results_keeps_last_n() {
+    fn summarize_tool_result_failure() {
+        let mut entry = HistoryEntry::tool_result("c1", "big result", false);
+        assert!(entry.summarize());
+        assert_tool_summarized(&entry, "[tool result: failed]");
+    }
+
+    #[test]
+    fn summarize_non_tool_is_noop() {
+        let mut entry = HistoryEntry::user("hi");
+        assert!(!entry.summarize());
+    }
+
+    #[test]
+    fn summarize_already_summarized_is_noop() {
+        let mut entry = HistoryEntry::tool_result("c1", "big result", true);
+        entry.summarize();
+        assert!(!entry.summarize()); // second call is no-op
+    }
+
+    // --- compact ------------------------------------------------------------
+
+    #[test]
+    fn compact_noop_without_tool_results() {
+        let mut cm = mgr(1000);
+        cm.push(HistoryEntry::user("hi"));
+        cm.push(HistoryEntry::assistant(Some("yo".into()), vec![]));
+        assert!(!cm.compact(1));
+        assert_eq!(cm.history().len(), 2);
+    }
+
+    #[test]
+    fn compact_keeps_last_n_tool_results() {
         let mut cm = mgr(1000);
         let big = "x".repeat(100);
-        cm.push(HistoryEntry::tool_result("c1", &big, true)); // summarize
-        cm.push(HistoryEntry::tool_result("c2", &big, false)); // summarize
-        cm.push(HistoryEntry::tool_result("c3", &big, true)); // keep
-        cm.summarize_old_results(1);
+        cm.push(HistoryEntry::tool_result("c1", &big, true));
+        cm.push(HistoryEntry::tool_result("c2", &big, false));
+        cm.push(HistoryEntry::tool_result("c3", &big, true));
+        // compact(1): summarize c1, c2; c3 stays.
+        assert!(cm.compact(1));
         let h = cm.history();
-        assert_tool_summarized(&h[0], true);
-        assert_tool_summarized(&h[1], false);
+        assert_tool_summarized(&h[0], "[tool result: success]");
+        assert_tool_summarized(&h[1], "[tool result: failed]");
         assert_tool_full(&h[2], &big);
     }
 
     #[test]
-    fn summarize_old_results_keep_zero_summarizes_all() {
+    fn compact_summarizes_all_when_keep_zero() {
         let mut cm = mgr(1000);
         let big = "x".repeat(100);
         cm.push(HistoryEntry::tool_result("c1", &big, true));
         cm.push(HistoryEntry::tool_result("c2", &big, false));
-        cm.summarize_old_results(0);
-        assert_tool_summarized(&cm.history()[0], true);
-        assert_tool_summarized(&cm.history()[1], false);
+        assert!(cm.compact(0));
+        assert_tool_summarized(&cm.history()[0], "[tool result: success]");
+        assert_tool_summarized(&cm.history()[1], "[tool result: failed]");
     }
 
     #[test]
-    fn summarize_old_results_keep_more_than_count_summarizes_none() {
+    fn compact_keep_more_than_count_skips_summarizing() {
         let mut cm = mgr(1000);
         let big = "x".repeat(100);
         cm.push(HistoryEntry::tool_result("c1", &big, true));
-        cm.summarize_old_results(5);
+        assert!(!cm.compact(5)); // no summarization needed
         assert_tool_full(&cm.history()[0], &big);
     }
 
     #[test]
-    fn summarize_old_results_idempotent() {
+    fn compact_idempotent_after_full_compaction() {
         let mut cm = mgr(1000);
         let big = "x".repeat(100);
         cm.push(HistoryEntry::tool_result("c1", &big, true));
-        cm.summarize_old_results(0);
-        let after_first = content_of(&cm.history()[0].to_chat_message());
-        cm.summarize_old_results(0); // again — should be a no-op
-        let after_second = content_of(&cm.history()[0].to_chat_message());
-        assert_eq!(after_first, after_second);
+        assert!(cm.compact(0));
+        assert!(!cm.compact(0)); // second call: nothing to do
     }
 
     #[test]
-    fn summarize_old_results_reduces_token_count() {
-        let mut cm = mgr(1000);
-        let big = "x".repeat(100); // 100 + id "c1"(2) = 102
-        cm.push(HistoryEntry::tool_result("c1", &big, true));
-        let before = cm.history()[0].token_count();
-        cm.summarize_old_results(0);
-        let after = cm.history()[0].token_count();
-        assert!(after < before, "after {after} should be < before {before}");
-    }
-
-    #[test]
-    fn summarize_old_results_ignores_non_tool_entries() {
+    fn compact_drops_oldest_non_system_after_all_summarized() {
         let mut cm = mgr(1000);
         let big = "x".repeat(100);
-        cm.push(HistoryEntry::user("hello"));
+        cm.push(HistoryEntry::user("hi"));
         cm.push(HistoryEntry::tool_result("c1", &big, true));
-        cm.push(HistoryEntry::assistant(Some("ok".into()), vec![]));
         cm.push(HistoryEntry::tool_result("c2", &big, false));
-        cm.summarize_old_results(1); // keep only c2
+        // compact(0): summarize both tool results, then drop "hi" (oldest User).
+        assert!(cm.compact(0));
         let h = cm.history();
-        assert_user(&h[0].to_chat_message(), "hello");
-        assert_tool_summarized(&h[1], true);
-        assert!(matches!(h[2], HistoryEntry::Assistant { .. }));
-        assert_tool_full(&h[3], &big);
+        assert_eq!(h.len(), 2);
+        assert_tool_summarized(&h[0], "[tool result: success]");
+        assert_tool_summarized(&h[1], "[tool result: failed]");
+    }
+
+    #[test]
+    fn compact_does_not_drop_system_entries() {
+        let mut cm = mgr(1000);
+        let big = "x".repeat(100);
+        cm.push(HistoryEntry::system("be helpful"));
+        cm.push(HistoryEntry::tool_result("c1", &big, true));
+        // compact(0): summarize c1, no User/Assistant to drop — system stays.
+        assert!(cm.compact(0));
+        let h = cm.history();
+        assert_eq!(h.len(), 2);
+        assert!(matches!(h[0], HistoryEntry::System { .. }));
+        assert_tool_summarized(&h[1], "[tool result: success]");
+    }
+
+    #[test]
+    fn compact_mixed_summarized_and_unsummarized() {
+        let mut cm = mgr(1000);
+        let big = "x".repeat(100);
+        cm.push(HistoryEntry::user("hi"));
+        cm.push(HistoryEntry::tool_result("c1", "small1", true));
+        cm.push(HistoryEntry::tool_result("c2", &big, false));
+        cm.push(HistoryEntry::tool_result("c3", "small3", true));
+        // compact(1): keep_from = 3-1 = 2, summarize c1+c2, keep c3. Not all
+        // summarized → no drop phase. User "hi" stays.
+        assert!(cm.compact(1));
+        let h = cm.history();
+        assert_eq!(h.len(), 4);
+        assert_tool_summarized(&h[1], "[tool result: success]");
+        assert_tool_summarized(&h[2], "[tool result: failed]");
+        assert_tool_full(&h[3], "small3");
+    }
+
+    // --- record_usage -------------------------------------------------------
+
+    #[test]
+    fn record_usage_stores_and_returns_value() {
+        let mut cm = ContextManager::new(1000);
+        assert_eq!(cm.last_usage(), None);
+        cm.record_usage(42);
+        assert_eq!(cm.last_usage(), Some(42));
+        cm.record_usage(99);
+        assert_eq!(cm.last_usage(), Some(99));
+    }
+
+    #[test]
+    fn record_usage_does_not_affect_history() {
+        let mut cm = ContextManager::new(1000);
+        cm.push(HistoryEntry::user("hi"));
+        cm.record_usage(10);
+        assert_eq!(cm.history().len(), 1);
     }
 }
