@@ -198,9 +198,9 @@ single source of truth. `ContextManager` therefore exposes three things:
   obviously-huge history (e.g. a 50 KB tool result) for a wasted round-trip.
   It never claims exact fit.
 - `compact(keep_last_n)` — the **correctness** lever. Summarizes old tool
-  results to placeholders (retaining the tool name), then drops the oldest
-  non-system entry once all tool results are summarized. Returns whether it
-  made progress (false ⇒ context exhausted, stop). Idempotent.
+  results to placeholders, then drops the oldest non-system entry once all
+  summarizable tool results (those outside the kept window) are summarized.
+  Returns whether it made progress (false ⇒ context exhausted, stop). Idempotent.
 - `record_usage(prompt_tokens)` — stores the last server-reported
   `usage.prompt_tokens` so the next request's ceiling is set from ground
   truth on warm turns.
@@ -225,8 +225,9 @@ impl ContextManager {
     pub fn get_trimmed(&self, max_bytes: u64) -> Vec<ChatMessage>;
 
     /// Summarize old tool results (keep last `keep_last_n`), then drop the
-    /// oldest non-system entry once all tool results are summarized. Returns
-    /// false when no further progress is possible (context exhausted).
+    /// oldest non-system entry once all summarizable tool results (those
+    /// outside the kept window) are summarized. Returns false when no further
+    /// progress is possible (context exhausted).
     pub fn compact(&mut self, keep_last_n: usize) -> bool;
 
     /// Record the server's last reported prompt token count.
@@ -249,9 +250,9 @@ impl HistoryEntry {
     /// Coarse byte size (for the pre-filter only — not a token count).
     pub fn size(&self) -> u64;
 
-    /// Collapse a tool result to a short placeholder that retains the tool
-    /// name: `[tool result: <name>: success|failed]`. No-op for other variants
-    /// and already-summarized results. Returns whether it changed.
+    /// Collapse a tool result to a short placeholder: `[tool result:
+    /// success|failed]`. No-op for other variants and already-summarized
+    /// results. Returns whether it changed.
     fn summarize(&mut self) -> bool;
 }
 ```

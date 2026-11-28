@@ -12,9 +12,10 @@
 //!   most recent entries under a byte ceiling to avoid sending obviously-huge
 //!   history for a wasted round-trip. It never claims exact fit.
 //! - `compact(keep_last_n)` is the **correctness** lever. It summarizes old
-//!   tool results to placeholders (retaining the tool name), then drops the
-//!   oldest non-system entry once all tool results are summarized. Returns
-//!   `true` when it made progress, `false` when context is exhausted.
+//!   tool results to placeholders, then drops the oldest non-system entry once
+//!   all summarizable tool results (those outside the kept window) are
+//!   summarized. Returns `true` when it made progress, `false` when context is
+//!   exhausted.
 //! - `record_usage(prompt_tokens)` stores the last server-reported
 //!   `usage.prompt_tokens` for warm-turn budgeting from ground truth.
 //!
@@ -121,9 +122,9 @@ impl HistoryEntry {
         }
     }
 
-    /// Collapse a tool result to a short placeholder that retains the tool
-    /// name: `[tool result: <name>: success|failed]`. No-op for other variants
-    /// and already-summarized results. Returns whether it changed.
+    /// Collapse a tool result to a short placeholder: `[tool result:
+    /// success|failed]`. No-op for other variants and already-summarized
+    /// results. Returns whether it changed.
     fn summarize(&mut self) -> bool {
         let Self::ToolResult {
             content,
@@ -153,7 +154,7 @@ impl HistoryEntry {
 /// returns the most recent entries that fit a coarse byte ceiling as
 /// [`ChatMessage`]s. Old tool results can be collapsed to short placeholders
 /// via [`compact`](Self::compact), which also drops the oldest non-system
-/// entry when all tool results are summarized.
+/// entry when all summarizable tool results are summarized.
 pub struct ContextManager {
     history: Vec<HistoryEntry>,
     /// Coarse byte ceiling — an honest heuristic, not an exact fit.
@@ -208,9 +209,10 @@ impl ContextManager {
     }
 
     /// Summarize old tool results (keep last `keep_last_n` in full), then drop
-    /// the oldest non-system entry once all tool results are summarized. Returns
-    /// `true` when it made progress, `false` when context is exhausted and no
-    /// further progress is possible.
+    /// the oldest non-system entry once all summarizable tool results (those
+    /// outside the kept window) are summarized. Returns `true` when it made
+    /// progress, `false` when context is exhausted and no further progress is
+    /// possible.
     ///
     /// Idempotent: repeated calls have no additional effect once the context is
     /// fully compacted.
@@ -232,12 +234,16 @@ impl ContextManager {
             }
         }
 
-        // Phase 2: if all tool results are already summarized (and there were
-        // tool results), drop the oldest User/Assistant entry to make room.
-        // ToolResult entries are already compacted placeholders — they are
-        // the last thing to go.
-        if !tool_indices.is_empty()
-            && tool_indices.iter().all(|&i| {
+        // Phase 2: once all *summarizable* tool results (those outside the
+        // kept window) are summarized, drop the oldest User/Assistant entry to
+        // make room. The last `keep_last_n` results are intentionally kept
+        // full, so gating on "all results summarized" would be unreachable when
+        // keep_last_n > 0 — gate on the summarizable set instead. ToolResult
+        // entries are already compacted placeholders — they are the last thing
+        // to go.
+        let summarizable = &tool_indices[..keep_from];
+        if !summarizable.is_empty()
+            && summarizable.iter().all(|&i| {
                 matches!(&self.history[i], HistoryEntry::ToolResult { is_summarized: true, .. })
             })
             && let Some(drop_idx) = self
@@ -361,6 +367,36 @@ mod tests {
 
         let entry = HistoryEntry::system("hello world");
         assert_eq!(entry.size(), 11);
+    }
+
+    #[test]
+    fn history_entry_size_assistant_with_text_and_calls() {
+        let call = ToolCall {
+            id: "id1".into(),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "f".into(),
+                arguments: "{}".into(),
+            },
+        };
+        // text "run" (3) + id "id1" (3) + kind "function" (8) + name "f" (1)
+        // + args "{}" (2) = 17
+        let entry = HistoryEntry::assistant(Some("run".into()), vec![call]);
+        assert_eq!(entry.size(), 17);
+    }
+
+    #[test]
+    fn history_entry_size_assistant_without_text() {
+        let entry = HistoryEntry::assistant(None, vec![]);
+        assert_eq!(entry.size(), 0);
+    }
+
+    #[test]
+    fn history_entry_size_tool_result() {
+        // tool_call_id "c1" (2) + content "done" (4) = 6; success /
+        // is_summarized don't contribute to the coarse byte size.
+        let entry = HistoryEntry::tool_result("c1", "done", true);
+        assert_eq!(entry.size(), 6);
     }
 
     // --- get_trimmed --------------------------------------------------------
@@ -555,14 +591,51 @@ mod tests {
         cm.push(HistoryEntry::tool_result("c1", "small1", true));
         cm.push(HistoryEntry::tool_result("c2", &big, false));
         cm.push(HistoryEntry::tool_result("c3", "small3", true));
-        // compact(1): keep_from = 3-1 = 2, summarize c1+c2, keep c3. Not all
-        // summarized → no drop phase. User "hi" stays.
+        // compact(1): keep_from = 3-1 = 2, summarize c1+c2 (the summarizable
+        // set), keep c3 full. All summarizable results are now summarized, so
+        // the drop phase fires and removes the oldest non-system entry ("hi").
         assert!(cm.compact(1));
         let h = cm.history();
-        assert_eq!(h.len(), 4);
+        assert_eq!(h.len(), 3);
+        assert_tool_summarized(&h[0], "[tool result: success]");
+        assert_tool_summarized(&h[1], "[tool result: failed]");
+        assert_tool_full(&h[2], "small3");
+    }
+
+    #[test]
+    fn compact_drops_across_multiple_calls_with_keep_last_n() {
+        // Regression: with keep_last_n > 0 the protected results are never
+        // summarized, so the drop phase must fire on the *second* compact call
+        // (when summarization is exhausted for the old results) rather than
+        // reporting exhaustion while droppable entries remain.
+        let mut cm = mgr(1000);
+        let big = "x".repeat(100);
+        cm.push(HistoryEntry::user("u1"));
+        cm.push(HistoryEntry::assistant(Some("a1".into()), vec![]));
+        cm.push(HistoryEntry::tool_result("c1", &big, true));
+        cm.push(HistoryEntry::tool_result("c2", &big, false));
+        cm.push(HistoryEntry::tool_result("c3", &big, true));
+        cm.push(HistoryEntry::tool_result("c4", &big, true));
+        // keep_last_n = 2 → summarizable set = {c1, c2} (oldest 2 of 4).
+        // Call 1: summarize c1, c2; all summarizable summarized → drop user "u1".
+        assert!(cm.compact(2));
+        let h = cm.history();
+        assert_eq!(h.len(), 5);
+        assert!(matches!(h[0], HistoryEntry::Assistant { .. }));
         assert_tool_summarized(&h[1], "[tool result: success]");
         assert_tool_summarized(&h[2], "[tool result: failed]");
-        assert_tool_full(&h[3], "small3");
+        assert_tool_full(&h[3], &big);
+        assert_tool_full(&h[4], &big);
+        // Call 2: c1, c2 already summarized (Phase 1 makes no progress); the
+        // summarizable set is exhausted, so drop the next oldest non-system
+        // entry (assistant "a1"). Before the fix this returned false.
+        assert!(cm.compact(2));
+        let h = cm.history();
+        assert_eq!(h.len(), 4);
+        assert_tool_summarized(&h[0], "[tool result: success]");
+        assert_tool_summarized(&h[1], "[tool result: failed]");
+        assert_tool_full(&h[2], &big);
+        assert_tool_full(&h[3], &big);
     }
 
     // --- record_usage -------------------------------------------------------
