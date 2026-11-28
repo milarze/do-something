@@ -3,7 +3,8 @@
 > **Placement**: This layer spans the framework/domain boundary (see
 > [`00-architecture.md`](./00-architecture.md)).
 > - **Framework** (`framework/agent/`): `AgentRunner` (tool-calling loop, ACP),
->   `ContextManager` (history trimming, token budgeting, summarization), the
+>   `ContextManager` (history trimming, server-authoritative context
+>   budgeting, overflow-driven compaction), the
 >   generic `KnowledgeContext` / `PromptAssembler` mechanism, and a generic
 >   `SessionState` holding an opaque `DomainTask`.
 > - **Domain** (`domain/recipe/agent/`): `RecipePromptBuilder` (decides which
@@ -21,8 +22,16 @@
 ## Overview
 
 The agent runner is the integration layer. The framework owns the tool-calling
-loop, the ACP protocol, conversation context, and token budgeting. The recipe
-domain owns prompt content and task state. The binary wires them together.
+loop, the ACP protocol, and conversation context. **The framework does not
+count tokens client-side** — it has no model tokenizer, and a chars-per-token
+heuristic under-counts the JSON-heavy tool traffic that dominates an agent
+loop, lending false confidence to trim decisions. The server's tokenizer is
+the single source of truth: the framework reacts to `ContextOverflow` by
+compacting history and retrying, and records the server-reported
+`usage.prompt_tokens` to bound warm-turn requests from ground truth. A coarse
+byte ceiling is used only as an honest pre-filter to avoid sending
+obviously-huge history for a wasted round-trip. The recipe domain owns prompt
+content and task state. The binary wires them together.
 
 ## Framework Components
 
@@ -92,8 +101,10 @@ impl AgentRunner {
             }
             iterations += 1;
 
-            // Get trimmed history
-            let messages = self.context.get_trimmed(self.config.message_budget);
+            // Coarse byte pre-filter (correctness is reactive — see Overflow
+            // below). Cold turn uses config.byte_budget; warm turns derive the
+            // ceiling from the last server usage.prompt_tokens.
+            let messages = self.context.get_trimmed(self.config.byte_budget);
 
             // Call LLM
             let stream = self.llm.chat_stream(
@@ -106,13 +117,24 @@ impl AgentRunner {
             // Process stream...
             let response = self.process_stream(stream, cx, session_id).await;
 
-            // Handle response
+            // Handle response. `process_stream` records server `usage`
+            // (prompt_tokens) on the terminal chunk via context.record_usage.
             match response {
                 StreamResult::Text(text) => return StopReason::EndTurn,
                 StreamResult::ToolCalls(calls) => {
                     for call in calls {
                         self.execute_tool(&call, cx, session_id, cancel.clone()).await;
                     }
+                }
+                // Server rejected the prompt as too long: compact and retry.
+                // The server's tokenizer is authoritative — this is the
+                // correctness path, not the byte pre-filter.
+                StreamResult::Overflow => {
+                    if !self.context.compact(self.config.keep_last_tool_results) {
+                        send_text(cx, session_id, "[context exhausted]");
+                        return StopReason::ContextExhausted;
+                    }
+                    // loop: retry with compacted history
                 }
                 StreamResult::Error(e) => {
                     send_text(cx, session_id, &format!("[error: {}]", e));
@@ -165,66 +187,83 @@ impl AgentRunner {
 
 ### `framework/agent/context.rs`
 
-Conversation history with token budgeting.
+Conversation context management. The framework does **not** count tokens
+client-side: it has no model tokenizer, and a chars-per-token heuristic
+under-counts the JSON-heavy tool traffic that dominates an agent loop — wrong
+in the worst direction for trim decisions. The server's tokenizer is the
+single source of truth. `ContextManager` therefore exposes three things:
+
+- `get_trimmed(max_bytes)` — a **coarse byte pre-filter** taking the most
+  recent entries under a byte ceiling. Its only job is to avoid sending
+  obviously-huge history (e.g. a 50 KB tool result) for a wasted round-trip.
+  It never claims exact fit.
+- `compact(keep_last_n)` — the **correctness** lever. Summarizes old tool
+  results to placeholders, then drops the oldest non-system entry once all
+  summarizable tool results (those outside the kept window) are summarized.
+  Returns whether it made progress (false ⇒ context exhausted, stop). Idempotent.
+- `record_usage(prompt_tokens)` — stores the last server-reported
+  `usage.prompt_tokens` so the next request's ceiling is set from ground
+  truth on warm turns.
 
 ```rust
 pub struct ContextManager {
     history: Vec<HistoryEntry>,
-    max_tokens: u64,
-    tokenizer: TokenCounter,
+    /// Coarse byte ceiling — honest heuristic, not an exact fit.
+    max_bytes: u64,
+    /// Last server-reported prompt token count (warm-turn ground truth).
+    last_prompt_tokens: Option<u64>,
 }
 
 impl ContextManager {
-    pub fn new(max_tokens: u64) -> Self;
+    pub fn new(max_bytes: u64) -> Self;
 
-    /// Add a message to history
+    /// Append an entry.
     pub fn push(&mut self, entry: HistoryEntry);
 
-    /// Get history trimmed to fit budget
-    pub fn get_trimmed(&self, budget: u64) -> Vec<ChatMessage> {
-        let mut messages = Vec::new();
-        let mut tokens_used = 0u64;
+    /// Most-recent-first entries under `max_bytes` (clamped to `self.max_bytes`).
+    /// Coarse pre-filter only; correctness comes from reactive `compact`.
+    pub fn get_trimmed(&self, max_bytes: u64) -> Vec<ChatMessage>;
 
-        // Walk backwards from most recent
-        for entry in self.history.iter().rev() {
-            let entry_tokens = entry.token_count;
-            if tokens_used + entry_tokens > budget {
-                break;
-            }
-            tokens_used += entry_tokens;
-            messages.push(entry.to_chat_message());
-        }
+    /// Summarize old tool results (keep last `keep_last_n`), then drop the
+    /// oldest non-system entry once all summarizable tool results (those
+    /// outside the kept window) are summarized. Returns false when no further
+    /// progress is possible (context exhausted).
+    pub fn compact(&mut self, keep_last_n: usize) -> bool;
 
-        messages.reverse();
-        messages
-    }
-
-    /// Summarize old tool results to save tokens
-    pub fn summarize_old_results(&mut self, keep_last_n: usize);
+    /// Record the server's last reported prompt token count.
+    pub fn record_usage(&mut self, prompt_tokens: u64);
 }
 
-pub struct HistoryEntry {
-    pub role: Role,
-    pub content: Option<String>,
-    pub tool_calls: Vec<ToolCall>,
-    pub tool_result: Option<ToolResult>,
-    pub token_count: u64,
-    pub is_summarized: bool,
+pub enum HistoryEntry {
+    System { text: String },
+    User { text: String },
+    Assistant { text: Option<String>, tool_calls: Vec<ToolCall> },
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+        success: bool,
+        is_summarized: bool,
+    },
 }
 
 impl HistoryEntry {
-    fn summarize(&mut self) {
-        if let Some(ref result) = self.tool_result {
-            self.content = Some(format!(
-                "[tool result: {}]",
-                if result.is_success() { "success" } else { "failed" }
-            ));
-            self.is_summarized = true;
-            self.token_count = 5; // Approximate
-        }
-    }
+    /// Coarse byte size (for the pre-filter only — not a token count).
+    pub fn size(&self) -> u64;
+
+    /// Collapse a tool result to a short placeholder: `[tool result:
+    /// success|failed]`. No-op for other variants and already-summarized
+    /// results. Returns whether it changed.
+    fn summarize(&mut self) -> bool;
 }
 ```
+
+> **Spec deviation, recorded:** the original design held a `token_count: u64`
+> per entry and trimmed by tokens via a `TokenCounter` trait. Dropped because
+> the framework has no tokenizer and a chars-per-token estimate under-counts
+> JSON tool traffic, lending false confidence to trim decisions. The server's
+> tokenizer is authoritative; `compact` reacts to its `ContextOverflow`
+> verdict, and `record_usage` tracks its accounting. (The `CharTokenCounter`
+> placeholder in PR #49 is superseded by this design.)
 
 ### `framework/agent/prompt.rs`
 
@@ -234,14 +273,15 @@ budgets and assembles.
 ```rust
 pub struct KnowledgeContext {
     pub sections: Vec<KnowledgeSection>,
-    pub token_budget: u64,
-    pub estimated_tokens: u64,
+    /// Coarse byte ceiling (pre-filter; the server is authoritative on tokens).
+    pub byte_budget: u64,
+    pub estimated_bytes: u64,
 }
 
 pub struct KnowledgeSection {
     pub label: String,
     pub json: String,
-    pub estimated_tokens: u64,
+    pub estimated_bytes: u64,
 }
 
 pub trait PromptAssembler {
@@ -291,7 +331,7 @@ impl RecipePromptBuilder {
             sections.push(KnowledgeSection {
                 label: "Site Configurations".into(),
                 json: serde_json::to_string(&configs)?,
-                estimated_tokens: estimate_tokens(&configs),
+                estimated_bytes: estimate_bytes(&configs),
             });
         }
 
@@ -301,7 +341,7 @@ impl RecipePromptBuilder {
             sections.push(KnowledgeSection {
                 label: "Known Patterns".into(),
                 json: serde_json::to_string(&patterns)?,
-                estimated_tokens: estimate_tokens(&patterns),
+                estimated_bytes: estimate_bytes(&patterns),
             });
         }
 
@@ -310,14 +350,14 @@ impl RecipePromptBuilder {
             sections.push(KnowledgeSection {
                 label: "User Preferences".into(),
                 json: serde_json::to_string(&user_model)?,
-                estimated_tokens: estimate_tokens(&user_model),
+                estimated_bytes: estimate_bytes(&user_model),
             });
         }
 
         Ok(KnowledgeContext {
             sections,
-            token_budget: self.config.knowledge_budget,
-            estimated_tokens: 0, // computed by assembler
+            byte_budget: self.config.knowledge_byte_budget,
+            estimated_bytes: 0, // computed by assembler
         })
     }
 }
@@ -415,18 +455,30 @@ pub fn create_runner(config: Config) -> AgentRunner {
 [profiles.local-llama]
 # ... profile fields ...
 
-context_budget = 100000        # Max tokens for context
-message_budget = 80000         # Max tokens for messages
-knowledge_budget = 8000        # Max tokens for knowledge sections
-compression_interval_days = 7  # Auto-compress weekly
-signal_retention_days = 30     # Keep signals for 30 days
+# Context management. The framework does NOT count tokens client-side — the
+# server's tokenizer is authoritative. `context_window` is the model's real
+# window (user-supplied, matches the model spec) and bounds warm-turn requests
+# via the last server-reported usage.prompt_tokens. The byte budgets are
+# coarse pre-filters only (avoid sending obviously-huge history/knowledge for
+# a wasted round-trip); correctness on overflow is reactive (compact + retry).
+context_window          = 100000  # Model context window (tokens)
+completion_reservation  = 4096    # Tokens reserved for the model's reply
+byte_budget            = 400_000  # Coarse byte ceiling for history pre-filter
+keep_last_tool_results = 4        # Tool results kept in full during compaction
+knowledge_byte_budget  = 32_000   # Coarse byte ceiling for knowledge sections
+compression_interval_days = 7     # Auto-compress weekly
+signal_retention_days = 30        # Keep signals for 30 days
 ```
 
 ## Tests
 
 - `ToolRegistry` returns correct definitions
-- `ContextManager` trims correctly and summarizes old results
-- `KnowledgeContext` budgets sections within the token limit
+- `ContextManager` byte-pre-filters most-recent-first, compacts on overflow
+  (summarize old tool results, then drop oldest non-system), and records
+  server `usage`; `compact` returns false when context is exhausted
+- `AgentRunner` compacts and retries on `ContextOverflow`, stops with
+  `ContextExhausted` when `compact` makes no progress
+- `KnowledgeContext` byte-pre-filters sections within the byte ceiling
 - `RecipePromptBuilder` builds the expected sections
 - `RecipeTaskTracker` updates state and reports progress
 - Integration test: full scrape cycle
